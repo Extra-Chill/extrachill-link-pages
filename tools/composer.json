@@ -17,6 +17,9 @@
     "lint:php": "phpcs --standard=../phpcs.xml.dist ../inc/ ../extrachill-link-pages.php"
   },
   "config": {
+    "platform": {
+      "php": "7.4.0"
+    },
     "allow-plugins": {
       "dealerdirect/phpcodesniffer-composer-installer": true
     }
