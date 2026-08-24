@@ -6,7 +6,7 @@ Owner-neutral Link Pages storage and operation runtime for the Extra Chill netwo
 
 The plugin loads its generic API synchronously from the exact plugin basename
 `extrachill-link-pages/extrachill-link-pages.php`. Consumers may validate
-`EC_LINK_PAGES_RUNTIME_API_VERSION === '1'` and
+`EC_LINK_PAGES_RUNTIME_API_VERSION === '2'` and
 `ec_link_pages_runtime_ready() === true` before registering adapters. The API is
 therefore available before `plugins_loaded` priority 20.
 
@@ -14,6 +14,56 @@ Compatibility is deliberate: `EC_LINK_PAGE_POST_TYPE` remains the legacy
 storage slug `artist_link_page`, and `EC_LINK_PAGE_OWNER_META_KEY` remains
 `_ec_link_page_owner_reference`. Existing posts, IDs, slugs, metadata, site
 ownership, routes, and rendering remain untouched.
+
+## Owner adapter contract
+
+Owner plugins keep authorization and management operations in an operation
+provider, but delegate generic persistence to:
+
+- `ec_read_link_page_persistence( int $link_page_id, array $overrides = array() )`
+- `ec_save_link_page_persistence( int $link_page_id, array $data )`
+- `ec_create_owned_link_page( string|array $owner, string $title, string $slug, bool $force = false )`
+
+The create primitive validates the canonical owner, rejects an occupied slug,
+verifies that WordPress did not suffix the requested slug, assigns the owner,
+and deletes the new post if assignment fails. Existing owner records are
+returned unless `$force` is true. Owner adapters may maintain reciprocal legacy
+metadata around this primitive, but generic storage does not know that policy.
+
+Public display is registered with
+`ec_register_link_page_public_projection_provider( $name, $callback, $priority = 10 )`.
+The callback receives a local context containing `link_page_id`, parsed `owner`,
+`owner_reference`, `public_url`, and request scalar data. It returns `null` when
+it does not own the reference, otherwise one strict projection:
+
+```php
+array(
+	'display_title'    => 'Required title',
+	'bio'              => '',
+	'profile_img_url'  => '',
+	'social_links'     => array(),
+	'social_renderer'  => null, // callable( $links, $position, $context ): string
+	'management_url'   => '',
+	'body_attributes'  => array(),
+	'seo'              => array(),
+	'tracking_url'     => '',
+	'components'       => array(), // before_header, after_header, after_links, footer
+	'assets'           => null, // callable( $context, $projection ): true|WP_Error
+)
+```
+
+Component slots contain ordered callback arrays. Provider and component calls
+are context-checked, exceptions fail closed, and exactly one provider must claim
+a page. Providers must resolve from local PHP data; the public renderer makes no
+HTTP request to discover owner data.
+
+The Artist companion must validate API version `2`, add the new function
+signatures, register a public provider, and delegate its existing management
+callbacks to generic persistence. It must stop loading its old public runtime
+before both plugins run together. Historical Artist-named query variables, body
+attributes, and the `extrachill_artist_link_page_minimal_head` hook remain only
+as documented compatibility identifiers; the companion supplies its historical
+body attributes and optional domain components.
 
 The CPT's structural registration settings and English labels remain unchanged.
 The standalone plugin intentionally owns label translation through the

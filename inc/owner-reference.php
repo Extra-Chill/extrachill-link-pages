@@ -100,11 +100,20 @@ function ec_normalize_link_page_owner_reference( $owner ) {
 	}
 	try {
 		if ( 'post' === $parsed['kind'] ) {
-			if ( ! post_type_exists( $parsed['subtype'] ) || get_post_type( $parsed['object_id'] ) !== $parsed['subtype'] ) {
+			if ( ! post_type_exists( $parsed['subtype'] ) ) {
 				return new WP_Error( 'invalid_link_page_owner_object', 'The Link Page post owner does not match its declared type.' );
 			}
-		} elseif ( ! taxonomy_exists( $parsed['subtype'] ) || ! get_term( $parsed['object_id'], $parsed['subtype'] ) ) {
+			$owner_post_type = get_post_type( $parsed['object_id'] );
+			if ( ! $owner_post_type ) {
+				return new WP_Error( 'invalid_link_page_owner_object', 'The Link Page post owner no longer exists.', array( 'status' => 404 ) );
+			}
+			if ( $owner_post_type !== $parsed['subtype'] ) {
+				return new WP_Error( 'invalid_link_page_owner_object', 'The Link Page post owner does not match its declared type.' );
+			}
+		} elseif ( ! taxonomy_exists( $parsed['subtype'] ) ) {
 			return new WP_Error( 'invalid_link_page_owner_object', 'The Link Page term owner does not match its declared taxonomy.' );
+		} elseif ( ! get_term( $parsed['object_id'], $parsed['subtype'] ) ) {
+			return new WP_Error( 'invalid_link_page_owner_object', 'The Link Page term owner no longer exists.', array( 'status' => 404 ) );
 		}
 	} finally {
 		if ( $did_switch ) {
@@ -273,6 +282,17 @@ function ec_collect_link_page_owner_compatibility_claims( $operation, $context )
 
 /** Resolve the normalized owner fields for a Link Page. */
 function ec_get_link_page_owner( $link_page_id ) {
+	$storage_blog_id = function_exists( 'ec_get_link_page_storage_blog_id' ) ? ec_get_link_page_storage_blog_id() : get_current_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( $storage_blog_id && get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $link_page_id ) {
+				return ec_get_link_page_owner( $link_page_id );
+			}
+		);
+	}
 	$link_page_id = absint( $link_page_id );
 	if ( ! $link_page_id || EC_LINK_PAGE_POST_TYPE !== get_post_type( $link_page_id ) ) {
 		return new WP_Error( 'invalid_link_page', 'The Link Page does not exist.' );
@@ -308,6 +328,17 @@ function ec_get_link_page_owner( $link_page_id ) {
 
 /** Find the unique Link Page assigned to an owner. */
 function ec_get_link_page_id_for_owner( $owner, $allowed_link_pages = array() ) {
+	$storage_blog_id = function_exists( 'ec_get_link_page_storage_blog_id' ) ? ec_get_link_page_storage_blog_id() : get_current_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( $storage_blog_id && get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $owner, $allowed_link_pages ) {
+				return ec_get_link_page_id_for_owner( $owner, $allowed_link_pages );
+			}
+		);
+	}
 	$reference = ec_normalize_link_page_owner_reference( $owner );
 	if ( is_wp_error( $reference ) ) {
 		return $reference;
@@ -367,6 +398,17 @@ function ec_validate_link_page_owner_candidate_ids( $candidate_ids ) {
 
 /** Assign the unique normalized owner of a Link Page. */
 function ec_assign_link_page_owner( $link_page_id, $owner, $replace_link_page_id = 0 ) {
+	$storage_blog_id = function_exists( 'ec_get_link_page_storage_blog_id' ) ? ec_get_link_page_storage_blog_id() : get_current_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( $storage_blog_id && get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $link_page_id, $owner, $replace_link_page_id ) {
+				return ec_assign_link_page_owner( $link_page_id, $owner, $replace_link_page_id );
+			}
+		);
+	}
 	$link_page_id = absint( $link_page_id );
 	if ( ! $link_page_id || EC_LINK_PAGE_POST_TYPE !== get_post_type( $link_page_id ) ) {
 		return new WP_Error( 'invalid_link_page', 'The Link Page does not exist.' );
@@ -434,6 +476,17 @@ function ec_halt_link_page_owner_backfill( $result, $link_page_id, $error_code, 
 
 /** Backfill a bounded page of compatibility owner associations. */
 function ec_backfill_link_page_owner_references( $limit = 100, $offset = 0 ) {
+	$storage_blog_id = function_exists( 'ec_get_link_page_storage_blog_id' ) ? ec_get_link_page_storage_blog_id() : get_current_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $limit, $offset ) {
+				return ec_backfill_link_page_owner_references( $limit, $offset );
+			}
+		);
+	}
 	$limit  = min( 500, max( 1, absint( $limit ) ) );
 	$offset = absint( $offset );
 	$ids    = get_posts(

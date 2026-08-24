@@ -52,6 +52,17 @@ function ec_register_link_page_operation_provider( $name, $callback, $priority =
 
 /** Resolve a page ID, owner reference, or exact pair to one target. */
 function ec_resolve_link_page_operation_target( $target ) {
+	$storage_blog_id = ec_get_link_page_storage_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $target ) {
+				return ec_resolve_link_page_operation_target( $target );
+			}
+		);
+	}
 	$link_page_id  = 0;
 	$reference     = '';
 	$has_page      = false;
@@ -215,6 +226,17 @@ function ec_prepare_link_page_operation( $target, $operation ) {
 
 /** Read Link Page data through its owner provider. */
 function ec_read_link_page( $target ) {
+	$storage_blog_id = ec_get_link_page_storage_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $target ) {
+				return ec_read_link_page( $target );
+			}
+		);
+	}
 	$prepared = ec_prepare_link_page_operation( $target, 'read' );
 	if ( is_wp_error( $prepared ) ) {
 		return $prepared;
@@ -228,6 +250,17 @@ function ec_read_link_page( $target ) {
 
 /** Save Link Page data through its owner provider. */
 function ec_save_link_page( $target, $data ) {
+	$storage_blog_id = ec_get_link_page_storage_blog_id();
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	}
+	if ( get_current_blog_id() !== $storage_blog_id ) {
+		return ec_with_link_page_storage_blog(
+			static function () use ( $target, $data ) {
+				return ec_save_link_page( $target, $data );
+			}
+		);
+	}
 	if ( ! is_array( $data ) ) {
 		return new WP_Error( 'invalid_link_page_operation_data', 'The Link Page save data must be an array.' );
 	}
@@ -235,7 +268,12 @@ function ec_save_link_page( $target, $data ) {
 	if ( is_wp_error( $prepared ) ) {
 		return $prepared;
 	}
-	$result = ec_invoke_link_page_operation_callback( $prepared['provider']['save'], array( $prepared['resolved'], $data ) );
+	$result = ec_with_link_page_lock_scope(
+		$prepared['resolved']['link_page_id'],
+		static function () use ( $prepared, $data ) {
+			return ec_invoke_link_page_operation_callback( $prepared['provider']['save'], array( $prepared['resolved'], $data ) );
+		}
+	);
 	if ( is_wp_error( $result ) ) {
 		return $result;
 	}
