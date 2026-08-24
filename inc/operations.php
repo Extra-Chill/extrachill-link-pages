@@ -14,12 +14,17 @@ function ec_link_page_operation_provider_registry() {
 		$registry = new class() {
 			private $providers = array();
 
-			public function register( $name, $callback, $priority ) {
+			public function can_register( $name, $callback, $priority ) {
 				if ( ! is_string( $name ) || 1 !== preg_match( '/^[a-z0-9][a-z0-9_-]*$/', $name ) || ! is_callable( $callback ) || ! is_int( $priority ) ) {
 					return new WP_Error( 'invalid_link_page_operation_provider', 'The Link Page operation provider registration is invalid.' );
 				}
-				if ( isset( $this->providers[ $name ] ) ) {
-					return new WP_Error( 'duplicate_link_page_operation_provider', 'The Link Page operation provider is already registered.' );
+				return isset( $this->providers[ $name ] ) ? new WP_Error( 'duplicate_link_page_operation_provider', 'The Link Page operation provider is already registered.' ) : true;
+			}
+
+			public function register( $name, $callback, $priority ) {
+				$valid = $this->can_register( $name, $callback, $priority );
+				if ( is_wp_error( $valid ) ) {
+					return $valid;
 				}
 				$this->providers[ $name ] = array(
 					'name'     => $name,
@@ -48,6 +53,11 @@ function ec_link_page_operation_provider_registry() {
 /** Register an append-only operation provider. */
 function ec_register_link_page_operation_provider( $name, $callback, $priority = 10 ) {
 	return ec_link_page_operation_provider_registry()->register( $name, $callback, $priority );
+}
+
+/** Preflight an operation provider registration without mutating the registry. */
+function ec_can_register_link_page_operation_provider( $name, $callback, $priority = 10 ) {
+	return ec_link_page_operation_provider_registry()->can_register( $name, $callback, $priority );
 }
 
 /** Resolve a page ID, owner reference, or exact pair to one target. */

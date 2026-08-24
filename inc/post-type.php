@@ -7,15 +7,28 @@
 
 defined( 'ABSPATH' ) || exit;
 
+defined( 'EC_LINK_PAGE_STORAGE_BLOG_OPTION' ) || define( 'EC_LINK_PAGE_STORAGE_BLOG_OPTION', 'ec_link_page_storage_blog_id' );
+
+/** Validate a candidate canonical storage site. */
+function ec_validate_link_page_storage_blog_id( $blog_id ) {
+	$blog_id = max( 0, (int) $blog_id );
+	$site    = $blog_id ? get_site( $blog_id ) : null;
+	return $site && empty( $site->deleted ) && empty( $site->archived ) && empty( $site->spam ) ? $blog_id : 0;
+}
+
 /** Return the one canonical network blog that stores Link Pages. */
 function ec_get_link_page_storage_blog_id() {
 	$multisite = function_exists( 'is_multisite' ) && is_multisite();
-	if ( $multisite && ( ! function_exists( 'has_filter' ) || ! has_filter( 'ec_link_page_storage_blog_id' ) ) ) {
-		return 0;
+	if ( ! $multisite ) {
+		return ec_validate_link_page_storage_blog_id( (int) get_current_blog_id() );
 	}
-	$default = $multisite ? 0 : (int) get_current_blog_id();
-	$blog_id = (int) apply_filters( 'ec_link_page_storage_blog_id', $default );
-	return $blog_id > 0 && get_site( $blog_id ) ? $blog_id : 0;
+	if ( function_exists( 'has_filter' ) && has_filter( 'ec_link_page_storage_blog_id' ) ) {
+		$explicit = ec_validate_link_page_storage_blog_id( (int) apply_filters( 'ec_link_page_storage_blog_id', 0 ) );
+		if ( $explicit ) {
+			return $explicit;
+		}
+	}
+	return ec_validate_link_page_storage_blog_id( (int) get_site_option( EC_LINK_PAGE_STORAGE_BLOG_OPTION, 0 ) );
 }
 
 /** Execute a storage callback on the canonical blog and restore the caller. */
@@ -250,13 +263,22 @@ function ec_flush_link_pages_site() {
  * @return true|WP_Error
  */
 function ec_prepare_link_pages_activation( $network_wide = false ) {
-	unset( $network_wide );
 	$valid = ec_validate_link_pages_runtime();
 	if ( is_wp_error( $valid ) ) {
 		return $valid;
 	}
 	$storage_blog_id = ec_get_link_page_storage_blog_id();
-	return $storage_blog_id ? ec_invoke_link_pages_site_callback( $storage_blog_id, 'ec_flush_link_pages_site' ) : new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
+	if ( ! $storage_blog_id ) {
+		return new WP_Error( $network_wide ? 'link_page_network_storage_unconfigured' : 'link_page_storage_unavailable', $network_wide ? 'Network activation requires an explicit or previously persisted canonical Link Page storage blog.' : 'The canonical Link Page storage blog is unavailable.' );
+	}
+	$result = ec_invoke_link_pages_site_callback( $storage_blog_id, 'ec_flush_link_pages_site' );
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+	if ( ! update_site_option( EC_LINK_PAGE_STORAGE_BLOG_OPTION, $storage_blog_id ) && (int) get_site_option( EC_LINK_PAGE_STORAGE_BLOG_OPTION, 0 ) !== $storage_blog_id ) {
+		return new WP_Error( 'link_page_storage_configuration_failed', 'The canonical Link Page storage configuration could not be persisted.' );
+	}
+	return true;
 }
 
 /**
@@ -287,6 +309,12 @@ function ec_deactivate_link_pages( $network_wide = false ) {
 		ec_record_link_pages_runtime_error( $result );
 	}
 }
+
+/*
+ * Deactivation deliberately preserves EC_LINK_PAGE_STORAGE_BLOG_OPTION. The
+ * rolling fallback may still own records on that site, and a later standalone
+ * activation must rediscover the same canonical storage rather than fork it.
+ */
 
 /** Remove standalone-owned storage rewrites and flush the current site. */
 function ec_unregister_and_flush_link_pages_site() {

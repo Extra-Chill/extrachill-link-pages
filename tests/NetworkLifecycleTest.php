@@ -18,6 +18,7 @@ final class NetworkLifecycleTest extends TestCase {
 		$this->assertSame( array(), $GLOBALS['ec_test']['site_queries'] ?? array() );
 		$this->assertSame( 4, get_current_blog_id() );
 		$this->assertSame( array(), $GLOBALS['_wp_switched_stack'] );
+		$this->assertSame( 4, $GLOBALS['ec_test']['site_options'][ EC_LINK_PAGE_STORAGE_BLOG_OPTION ] );
 
 		$GLOBALS['ec_test']['site_queries'] = array();
 		$GLOBALS['ec_test']['site_flushes'] = array();
@@ -31,6 +32,18 @@ final class NetworkLifecycleTest extends TestCase {
 		}
 		$this->assertSame( array(), $GLOBALS['ec_test']['site_queries'] );
 		$this->assertSame( 4, get_current_blog_id() );
+		$this->assertSame( 4, $GLOBALS['ec_test']['site_options'][ EC_LINK_PAGE_STORAGE_BLOG_OPTION ] );
+	}
+
+	public function test_persisted_storage_is_used_without_provider_and_unconfigured_network_activation_fails(): void {
+		$GLOBALS['ec_test']['filters']['ec_link_page_storage_blog_id'] = array();
+		$this->assertSame( 0, ec_get_link_page_storage_blog_id() );
+		$result = ec_prepare_link_pages_activation( true );
+		$this->assertSame( 'link_page_network_storage_unconfigured', $result->get_error_code() );
+
+		$GLOBALS['ec_test']['site_options'][ EC_LINK_PAGE_STORAGE_BLOG_OPTION ] = 4;
+		$this->assertSame( 4, ec_get_link_page_storage_blog_id() );
+		$this->assertTrue( ec_prepare_link_pages_activation( true ) );
 	}
 
 	public function test_standalone_deactivation_unregisters_before_its_single_flush(): void {

@@ -647,19 +647,102 @@ function ec_compensate_link_page_creation_error( $error, $existing, $owner_refer
 	return new WP_Error( 'link_page_creation_compensation_failed', 'The failed Link Page creation could not restore the previous page.', array( 'cause' => $error->get_error_code() ) );
 }
 
-/** Create a page and atomically assign its canonical owner. */
-function ec_create_owned_link_page( $owner_reference, $title, $slug, $force = false ) {
+/** Provision under the canonical owner lock and report whether this call won. */
+function ec_provision_owned_link_page( $owner_reference, $title, $slug, $force = false, $precondition = null ) {
+	global $wpdb;
 	$storage_blog_id = ec_get_link_page_storage_blog_id();
 	if ( ! $storage_blog_id ) {
 		return new WP_Error( 'link_page_storage_unavailable', 'The canonical Link Page storage blog is unavailable.' );
 	}
 	if ( get_current_blog_id() !== $storage_blog_id ) {
 		return ec_with_link_page_storage_blog(
-			static function () use ( $owner_reference, $title, $slug, $force ) {
-				return ec_create_owned_link_page( $owner_reference, $title, $slug, $force );
+			static function () use ( $owner_reference, $title, $slug, $force, $precondition ) {
+				return ec_provision_owned_link_page( $owner_reference, $title, $slug, $force, $precondition );
 			}
 		);
 	}
+	$owner_reference = ec_normalize_link_page_owner_reference( $owner_reference );
+	if ( is_wp_error( $owner_reference ) ) {
+		return $owner_reference;
+	}
+	if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_var' ) || ! method_exists( $wpdb, 'prepare' ) ) {
+		return new WP_Error( 'link_page_owner_lock_unsupported', 'Link Page provisioning requires owner advisory lock support.' );
+	}
+	$lock_name = 'ec_link_page_owner:' . hash( 'sha256', $owner_reference );
+	$acquired  = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 5)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Owner lock serializes provisioning before a page exists.
+	if ( '1' !== (string) $acquired ) {
+		return new WP_Error( 'link_page_owner_lock_failed', 'The Link Page owner provisioning lock could not be acquired.' );
+	}
+	try {
+		if ( null !== $precondition ) {
+			if ( ! is_callable( $precondition ) ) {
+				return new WP_Error( 'invalid_link_page_provision_precondition', 'The Link Page provisioning precondition is invalid.' );
+			}
+			$allowed = ec_invoke_link_page_provision_precondition( $precondition, $owner_reference );
+			if ( true !== $allowed ) {
+				return $allowed;
+			}
+		}
+		$existing = ec_get_link_page_id_for_owner( $owner_reference );
+		if ( is_wp_error( $existing ) ) {
+			return $existing;
+		}
+		if ( $existing && ! $force ) {
+			return array(
+				'link_page_id' => (int) $existing,
+				'created'      => false,
+			);
+		}
+		$result = ec_create_owned_link_page_unlocked( $owner_reference, $title, $slug, $force );
+		return is_wp_error( $result ) ? $result : array(
+			'link_page_id' => (int) $result,
+			'created'      => true,
+		);
+	} finally {
+		$released = $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Paired owner lock release.
+		if ( '1' !== (string) $released ) {
+			do_action( 'ec_link_page_owner_lock_release_failed', $owner_reference );
+		}
+	}
+}
+
+/** Invoke an owner precondition without allowing storage-context leakage. */
+function ec_invoke_link_page_provision_precondition( $precondition, $owner_reference ) {
+	$blog_id  = get_current_blog_id();
+	$stack    = isset( $GLOBALS['_wp_switched_stack'] ) && is_array( $GLOBALS['_wp_switched_stack'] ) ? $GLOBALS['_wp_switched_stack'] : array();
+	$switched = ! empty( $GLOBALS['switched'] );
+	$result   = null;
+	$error    = null;
+	try {
+		$result = call_user_func( $precondition, $owner_reference );
+	} catch ( Throwable $throwable ) {
+		$error = new WP_Error( 'link_page_provision_precondition_exception', 'The Link Page provisioning precondition failed with an exception.' );
+	}
+	$leaked   = get_current_blog_id() !== $blog_id || ( $GLOBALS['_wp_switched_stack'] ?? array() ) !== $stack || ! empty( $GLOBALS['switched'] ) !== $switched;
+	$restored = ec_restore_link_pages_site_context( $blog_id, $stack, $switched );
+	if ( ! $restored ) {
+		return new WP_Error( 'link_page_provision_precondition_restore_failed', 'The Link Page provisioning precondition context could not be restored.' );
+	}
+	if ( $leaked ) {
+		return new WP_Error( 'link_page_provision_precondition_context_leak', 'The Link Page provisioning precondition leaked its site context.' );
+	}
+	if ( $error ) {
+		return $error;
+	}
+	if ( true !== $result && ! is_wp_error( $result ) ) {
+		return new WP_Error( 'link_page_provision_precondition_invalid_result', 'The Link Page provisioning precondition returned an invalid result.' );
+	}
+	return $result;
+}
+
+/** Preserve the historical integer-return creation contract. */
+function ec_create_owned_link_page( $owner_reference, $title, $slug, $force = false ) {
+	$result = ec_provision_owned_link_page( $owner_reference, $title, $slug, $force );
+	return is_wp_error( $result ) ? $result : (int) $result['link_page_id'];
+}
+
+/** Create and assign a page while the canonical owner lock is held. */
+function ec_create_owned_link_page_unlocked( $owner_reference, $title, $slug, $force = false ) {
 	$owner_reference = ec_normalize_link_page_owner_reference( $owner_reference );
 	$title           = sanitize_text_field( (string) $title );
 	$slug            = sanitize_title( (string) $slug );

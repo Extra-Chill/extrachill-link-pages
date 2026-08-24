@@ -26,6 +26,7 @@ function is_multisite() { return false; }
 function esc_html( $value ) { return $value; }
 function wp_die( $message ) { throw new RuntimeException( $message ); }
 function get_site_option( $key, $default = false ) { return $default; }
+function update_site_option() { return true; }
 function get_current_blog_id() { return 1; }
 function get_main_site_id() { return 1; }
 function get_site( $id ) { return (object) array( 'blog_id' => $id ); }

@@ -6,7 +6,7 @@ Owner-neutral Link Pages storage and operation runtime for the Extra Chill netwo
 
 The plugin loads its generic API synchronously from the exact plugin basename
 `extrachill-link-pages/extrachill-link-pages.php`. Consumers may validate
-`EC_LINK_PAGES_RUNTIME_API_VERSION === '2'` and
+`EC_LINK_PAGES_RUNTIME_API_VERSION === '3'` and
 `ec_link_pages_runtime_ready() === true` before registering adapters. The API is
 therefore available before `plugins_loaded` priority 20.
 
@@ -23,12 +23,17 @@ provider, but delegate generic persistence to:
 - `ec_read_link_page_persistence( int $link_page_id, array $overrides = array() )`
 - `ec_save_link_page_persistence( int $link_page_id, array $data )`
 - `ec_create_owned_link_page( string|array $owner, string $title, string $slug, bool $force = false )`
+- `ec_provision_owned_link_page( string|array $owner, string $title, string $slug, bool $force = false, ?callable $precondition = null )`
 
 The create primitive validates the canonical owner, rejects an occupied slug,
 verifies that WordPress did not suffix the requested slug, assigns the owner,
 and deletes the new post if assignment fails. Existing owner records are
 returned unless `$force` is true. Owner adapters may maintain reciprocal legacy
 metadata around this primitive, but generic storage does not know that policy.
+The provisioning primitive serializes by canonical owner and returns
+`array( 'link_page_id' => int, 'created' => bool )`. Its optional precondition
+runs inside the owner lock immediately before lookup or creation; the historical
+create wrapper continues returning only the integer ID.
 
 Public display is registered with
 `ec_register_link_page_public_projection_provider( $name, $callback, $priority = 10 )`.
@@ -53,11 +58,13 @@ array(
 ```
 
 Component slots contain ordered callback arrays. Provider and component calls
-are context-checked, exceptions fail closed, and exactly one provider must claim
-a page. Providers must resolve from local PHP data; the public renderer makes no
-HTTP request to discover owner data.
+are context-checked and exceptions fail closed. A live provider takes precedence;
+when no provider is loaded, `ec_save_link_page_public_projection_snapshot()` and
+`ec_read_link_page_public_projection_snapshot()` provide the versioned,
+owner-checksummed, serializable fallback. The public renderer makes no HTTP
+request to discover owner data.
 
-The Artist companion must validate API version `2`, add the new function
+The Artist companion must validate API version `3`, add the new function
 signatures, register a public provider, and delegate its existing management
 callbacks to generic persistence. It must stop loading its old public runtime
 before both plugins run together. Historical Artist-named query variables, body
@@ -84,10 +91,11 @@ is complete, Artist Platform can declare `Requires Plugins: extrachill-link-page
 
 ## Multisite lifecycle
 
-Network activation and deactivation enumerate site IDs in bounded pages of 100,
-switch into each site, flush that site's rewrite rules, and restore the caller's
-exact multisite context. Sites initialized after network activation are flushed
-after WordPress completes their core initialization. Query, switch, callback,
+Successful activation persists the explicitly resolved canonical storage blog
+in the network option `ec_link_page_storage_blog_id`. Runtime resolution checks
+an explicit filter first and then that validated option. Network activation with
+neither source fails closed. Activation and deactivation touch only that storage
+site and restore the caller's exact multisite context. Query, switch, callback,
 context-restoration, and runtime-contract failures are exposed as `WP_Error`,
 logged, published through `ec_link_pages_runtime_error`, and shown in site and
 network admin notices. Activation terminates on such an error so WordPress does
@@ -98,4 +106,6 @@ flushing affected sites, so standalone rewrites are removed rather than
 re-created. During the rolling transition, Artist Platform fallback may resume
 on the next request. That fallback must re-establish its rewrites through Artist
 Platform's existing activation or rewrite lifecycle; this plugin does not load
-or invoke the fallback during deactivation.
+or invoke the fallback during deactivation. Deactivation deliberately preserves
+the canonical storage option because fallback code may still own records there;
+silently deleting it could fork subsequent storage ownership.

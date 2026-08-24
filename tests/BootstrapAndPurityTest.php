@@ -66,7 +66,8 @@ final class BootstrapAndPurityTest extends TestCase {
 		$normalize_functions = static function ( $matches ) {
 			return array_map( static function ( $match ) { return $match[1] . '(' . preg_replace( '/\s+/', ' ', trim( $match[2] ) ) . ')'; }, $matches );
 		};
-		$this->assertSame( $normalize_functions( $coordinated_functions ), array_slice( $normalize_functions( $local_functions ), 0, count( $coordinated_functions ) ) );
+		$local_contract = array_values( array_filter( $normalize_functions( $local_functions ), static function ( $function ) { return false === strpos( $function, 'ec_can_register_link_page_' ); } ) );
+		$this->assertSame( $normalize_functions( $coordinated_functions ), array_slice( $local_contract, 0, count( $coordinated_functions ) ) );
 		$all_local = file_get_contents( dirname( __DIR__ ) . '/inc/post-type.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/compatibility.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/owner-reference.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/operations.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/storage.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/public-projections.php' ) . file_get_contents( dirname( __DIR__ ) . '/inc/public-runtime.php' );
 		preg_match_all( '/^function\s+(ec_[a-z0-9_]+)\s*\(([^)]*)\)/m', $all_local, $all_functions, PREG_SET_ORDER );
 		$this->assertSame( array(), array_diff( array_keys( ec_link_pages_runtime_function_contract() ), array_column( $all_functions, 1 ) ) );

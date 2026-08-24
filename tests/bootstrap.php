@@ -23,6 +23,22 @@ class EcTestActivationException extends RuntimeException {}
 class EcTestWpdb {
 	private $locks = array();
 	public function prepare( $query, ...$args ) { return vsprintf( str_replace( '%s', "'%s'", $query ), $args ); }
+	public function get_blog_prefix( $blog_id ) { return 'wp_' . (int) $blog_id . '_'; }
+	public function get_row( $query ) {
+		if ( preg_match( '/FROM wp_(\d+)_posts WHERE ID = (\d+)/', $query, $matches ) ) {
+			$post = $GLOBALS['ec_test']['blogs'][ (int) $matches[1] ]['posts'][ (int) $matches[2] ] ?? null;
+			return $post ? (object) array( 'ID' => $post->ID, 'post_type' => $post->post_type, 'post_status' => $post->post_status ?? 'publish' ) : null;
+		}
+		if ( preg_match( "/FROM wp_(\d+)_term_taxonomy WHERE term_id = (\d+) AND taxonomy = '([^']+)'/", $query, $matches ) ) {
+			$term = $GLOBALS['ec_test']['blogs'][ (int) $matches[1] ]['terms'][ (int) $matches[2] ] ?? null;
+			return $term && $term->taxonomy === $matches[3] ? (object) array( 'term_id' => $term->term_id, 'taxonomy' => $term->taxonomy ) : null;
+		}
+		if ( preg_match( '/FROM wp_(\d+)_term_taxonomy WHERE term_id = (\d+)/', $query, $matches ) ) {
+			$term = $GLOBALS['ec_test']['blogs'][ (int) $matches[1] ]['terms'][ (int) $matches[2] ] ?? null;
+			return $term ? (object) array( 'term_id' => $term->term_id, 'taxonomy' => $term->taxonomy ) : null;
+		}
+		return null;
+	}
 	public function get_var( $query ) {
 		if ( false !== strpos( $query, 'GET_LOCK' ) ) {
 			++$GLOBALS['ec_test']['lock_acquires'];
@@ -57,6 +73,8 @@ function wp_strip_all_tags( $value ) { return strip_tags( (string) $value ); }
 function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
 function wp_unslash( $value ) { return $value; }
 function sanitize_text_field( $value ) { return trim( strip_tags( (string) $value ) ); }
+function sanitize_textarea_field( $value ) { return trim( strip_tags( (string) $value ) ); }
+function sanitize_key( $value ) { return strtolower( preg_replace( '/[^a-z0-9_-]/', '', (string) $value ) ); }
 function sanitize_title( $value ) { return trim( strtolower( preg_replace( '/[^a-z0-9]+/i', '-', (string) $value ) ), '-' ); }
 function sanitize_hex_color( $value ) { return is_string( $value ) && preg_match( '/^#(?:[0-9a-f]{3}){1,2}$/i', $value ) ? strtolower( $value ) : null; }
 function plugin_dir_path( $file ) { return rtrim( dirname( $file ), '/' ) . '/'; }
@@ -84,6 +102,7 @@ function esc_html( $value ) { return $value; }
 function wp_die( $message ) { throw new EcTestActivationException( $message ); }
 function is_multisite() { return ! empty( $GLOBALS['ec_test']['multisite'] ); }
 function get_site_option( $key, $default = false ) { return $GLOBALS['ec_test']['site_options'][ $key ] ?? $default; }
+function update_site_option( $key, $value ) { $GLOBALS['ec_test']['site_options'][ $key ] = $value; return true; }
 function get_sites( $args = array() ) {
 	$GLOBALS['ec_test']['site_queries'][] = $args;
 	$ids = array_keys( $GLOBALS['ec_test']['blogs'] );

@@ -59,6 +59,97 @@ final class PublicRuntimeTest extends TestCase {
 		$this->assertCount( 2, $GLOBALS['ec_test']['blogs'][4]['posts'] );
 	}
 
+	public function test_owner_locked_provisioning_reports_winner_without_breaking_integer_wrapper(): void {
+		$first = ec_provision_owned_link_page( 'term:7:place:30', 'Place', 'place' );
+		$this->assertTrue( $first['created'] );
+		$this->assertIsInt( $first['link_page_id'] );
+		$second = ec_provision_owned_link_page( 'term:7:place:30', 'Ignored', 'other' );
+		$this->assertFalse( $second['created'] );
+		$this->assertSame( $first['link_page_id'], $second['link_page_id'] );
+		$this->assertSame( $first['link_page_id'], ec_create_owned_link_page( 'term:7:place:30', 'Ignored', 'other' ) );
+	}
+
+	public function test_owner_locked_precondition_denial_creates_nothing(): void {
+		$before = $GLOBALS['ec_test']['blogs'][4]['posts'];
+		$result = ec_provision_owned_link_page( 'term:7:place:30', 'Denied', 'denied', false, static function () { return new WP_Error( 'revoked', 'Revoked.' ); } );
+		$this->assertSame( 'revoked', $result->get_error_code() );
+		$this->assertSame( $before, $GLOBALS['ec_test']['blogs'][4]['posts'] );
+		$this->assertCount( 0, array_filter( $GLOBALS['ec_test']['fired_actions'] ?? array(), static function ( $action ) { return 'ec_owned_link_page_created' === $action[0]; } ) );
+	}
+
+	public function test_owner_locked_precondition_is_contained_and_fails_closed(): void {
+		$cases = array(
+			'link_page_provision_precondition_context_leak' => static function () { switch_to_blog( 7 ); return true; },
+			'link_page_provision_precondition_exception' => static function () { throw new RuntimeException( 'failed' ); },
+			'link_page_provision_precondition_invalid_result' => static function () { return 'yes'; },
+		);
+		foreach ( $cases as $code => $callback ) {
+			$before = $GLOBALS['ec_test']['blogs'][4]['posts'];
+			$result = ec_provision_owned_link_page( 'term:7:place:30', 'Denied', 'denied', false, $callback );
+			$this->assertSame( $code, $result->get_error_code() );
+			$this->assertSame( $before, $GLOBALS['ec_test']['blogs'][4]['posts'] );
+			$this->assertSame( 4, get_current_blog_id() );
+		}
+
+		$before = $GLOBALS['ec_test']['blogs'][4]['posts'];
+		$result = ec_provision_owned_link_page(
+			'term:7:place:30',
+			'Denied',
+			'denied',
+			false,
+			static function () {
+				switch_to_blog( 7 );
+				$GLOBALS['ec_test']['blog_stack']       = array();
+				$GLOBALS['_wp_switched_stack']          = array();
+				$GLOBALS['ec_test']['fail_switch_to_blog'] = 4;
+				return true;
+			}
+		);
+		$this->assertSame( 'link_page_provision_precondition_restore_failed', $result->get_error_code() );
+		$this->assertSame( $before, $GLOBALS['ec_test']['blogs'][4]['posts'] );
+	}
+
+	public function test_stored_projection_renders_without_owner_provider_and_rejects_corruption(): void {
+		$id = ec_create_owned_link_page( 'term:7:place:30', 'Stored Place', 'stored-place' );
+		$record = ec_save_link_page_public_projection_snapshot(
+			$id,
+			'term:7:place:30',
+			array(
+				'display_title'   => 'Stored Place',
+				'bio'             => "Public snapshot\nSecond line",
+				'profile_img_url' => 'https://media.example/place.jpg',
+				'social_links'    => array( array( 'type' => 'web', 'url' => 'https://place.example' ) ),
+				'body_attributes' => array( 'data-owner-type' => 'place' ),
+				'seo'             => array(
+					'canonical'   => 'https://place.example/events/live%20music/',
+					'description' => "Venue description\nSecond line",
+					'schema'      => array( array( '@type' => 'Place', 'url' => 'https://place.example/events/live%20music/', 'description' => "Venue description\nSecond line" ) ),
+				),
+			)
+		);
+		$this->assertIsArray( $record );
+		$projection = ec_get_link_page_public_projection( $id );
+		$this->assertSame( 'Stored Place', $projection['display_title'] );
+		$this->assertSame( "Public snapshot\nSecond line", $projection['bio'] );
+		$this->assertSame( 'https://place.example/events/live%20music/', $projection['seo']['schema'][0]['url'] );
+		$this->assertSame( "Venue description\nSecond line", $projection['seo']['schema'][0]['description'] );
+		$this->assertSame( 'place', $projection['body_attributes']['data-owner-type'] );
+		$this->assertIsCallable( $projection['social_renderer'] );
+
+		$record['owner_checksum'] = str_repeat( '0', 64 );
+		update_post_meta( $id, EC_LINK_PAGE_PUBLIC_SNAPSHOT_META_KEY, $record );
+		$corrupt = ec_get_link_page_public_projection( $id );
+		$this->assertSame( 'link_page_public_snapshot_corrupt', $corrupt->get_error_code() );
+		$this->assertSame( 500, $corrupt->get_error_data()['status'] );
+	}
+
+	public function test_stored_schema_rejects_invalid_utf8_controls_and_oversize_values(): void {
+		foreach ( array( "\xC3\x28", "unsafe\x01control", str_repeat( 'x', 2049 ) ) as $invalid ) {
+			$this->assertFalse( ec_validate_link_page_public_schema_value( array( 'description' => $invalid ) ) );
+		}
+		$this->assertTrue( ec_validate_link_page_public_schema_value( array( 'description' => "Line one\nLine two", 'url' => 'https://example.com/live%20music/' ) ) );
+	}
+
 	public function test_force_creation_replaces_owner_and_preserves_requested_slug(): void {
 		$this->assignPostOwner();
 		$id = ec_create_owned_link_page( 'post:4:profile:20', 'Replacement', 'legacy-page', true );
@@ -130,6 +221,14 @@ final class PublicRuntimeTest extends TestCase {
 		ec_register_link_page_public_projection_provider( 'leak', static function () { switch_to_blog( 7 ); return array( 'display_title' => 'Unsafe' ); } );
 		$this->assertSame( 'link_page_public_projection_provider_context_leak', $this->errorCode( ec_get_link_page_public_projection( 40 ) ) );
 		$this->assertSame( 4, get_current_blog_id() );
+	}
+
+	public function test_live_projection_provider_preserves_explicit_404_status(): void {
+		$this->assignPostOwner();
+		ec_register_link_page_public_projection_provider( 'missing-owner', static function () { return new WP_Error( 'public_owner_unavailable', 'Unavailable.', array( 'status' => 404 ) ); } );
+		$result = ec_get_link_page_public_projection( 40 );
+		$this->assertSame( 'public_owner_unavailable', $result->get_error_code() );
+		$this->assertSame( 404, $result->get_error_data()['status'] );
 	}
 
 	public function test_public_routing_root_valid_unknown_extra_chill_www_and_head_contracts(): void {
