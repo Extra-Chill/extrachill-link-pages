@@ -62,4 +62,14 @@ final class PackageContractTest extends TestCase {
 			$files
 		);
 	}
+
+	public function test_required_workflow_installs_javascript_dependencies_before_tests(): void {
+		$workflow = file_get_contents( dirname( __DIR__ ) . '/.github/workflows/required-checks.yml' );
+		$install  = strpos( $workflow, 'run: npm ci' );
+		$test     = strpos( $workflow, 'run: npm test' );
+
+		$this->assertNotFalse( $install );
+		$this->assertNotFalse( $test );
+		$this->assertLessThan( $test, $install );
+	}
 }

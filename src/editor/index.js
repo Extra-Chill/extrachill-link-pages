@@ -1102,7 +1102,12 @@ export function QrModal( { url, error, onClose, restoreFocus, titleId } ) {
 				return;
 			}
 			const focusable = getFocusable();
-			if ( 'Tab' !== event.key || focusable.length < 2 ) {
+			if ( 'Tab' !== event.key || 0 === focusable.length ) {
+				return;
+			}
+			if ( 1 === focusable.length ) {
+				event.preventDefault();
+				focusable[ 0 ].focus();
 				return;
 			}
 			const first = focusable[ 0 ];

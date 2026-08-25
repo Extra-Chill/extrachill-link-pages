@@ -374,24 +374,40 @@ describe( 'portable editor behavior', () => {
 		await act( async () => root.unmount() );
 	} );
 
-	it( 'clears QR loading state when generation fails', async () => {
+	it( 'traps one-control QR loading and error states', async () => {
+		const pending = deferred();
 		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
 			read: jest.fn( async ( id ) => documentFor( id ) ),
 			save: jest.fn(),
-			qrCode: jest.fn( async () => {
-				throw new Error( 'QR failed.' );
-			} ),
+			qrCode: jest.fn( () => pending.promise ),
 		};
 		const { container, root } = await renderEditor();
 		const qrButton = [ ...container.querySelectorAll( 'button' ) ].find(
 			( button ) => 'QR Code' === button.textContent
 		);
 		await act( async () => qrButton.click() );
+		let close = container.querySelector( '.ec-qr-modal button' );
+		expect( close ).toBe( document.activeElement );
+		await act( async () =>
+			document.dispatchEvent(
+				new KeyboardEvent( 'keydown', { key: 'Tab', bubbles: true } )
+			)
+		);
+		expect( close ).toBe( document.activeElement );
+		await act( async () => pending.reject( new Error( 'QR failed.' ) ) );
 		await flush();
 		expect(
 			container.querySelector( '.ec-qr-modal [role="alert"]' ).textContent
 		).toContain( 'QR failed.' );
 		expect( container.textContent ).not.toContain( 'Generating QR Code' );
+		close = container.querySelector( '.ec-qr-modal button' );
+		close.focus();
+		await act( async () =>
+			document.dispatchEvent(
+				new KeyboardEvent( 'keydown', { key: 'Tab', bubbles: true } )
+			)
+		);
+		expect( close ).toBe( document.activeElement );
 		await act( async () => root.unmount() );
 	} );
 
