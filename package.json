@@ -2,7 +2,7 @@
   "name": "extrachill-link-pages",
   "private": true,
   "scripts": {
-    "build": "wp-scripts build src/editor/index.js --output-path=build/editor && cp src/editor/block.json src/editor/render.php build/editor/",
+		"build": "wp-scripts build src/editor/index.js --output-path=build/editor && cp src/editor/block.json src/editor/render.php build/editor/ && rm -rf build/editor/editor",
     "lint:js": "wp-scripts lint-js src/editor tests/js",
     "test": "node tests/js/assets.test.js && node tests/js/dom.test.js && node tests/js/editor-contract.test.js"
   },
