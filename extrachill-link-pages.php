@@ -708,6 +708,14 @@ function ec_enqueue_link_page_editor() {
 	}
 	wp_enqueue_script( 'extrachill-link-page-editor-view-script' );
 	wp_enqueue_style( 'extrachill-link-page-editor-style' );
+	foreach ( array(
+		'extrch-link-page'           => 'assets/css/extrch-links.css',
+		'extrch-share-modal'         => 'assets/css/extrch-share-modal.css',
+		'extrch-custom-social-icons' => 'assets/css/custom-social-icons.css',
+	) as $handle => $path ) {
+		$file = EXTRACHILL_LINK_PAGES_PLUGIN_DIR . $path;
+		wp_enqueue_style( $handle, plugins_url( $path, EXTRACHILL_LINK_PAGES_PLUGIN_FILE ), array(), file_exists( $file ) ? filemtime( $file ) : EXTRACHILL_LINK_PAGES_VERSION );
+	}
 	return true;
 }
 

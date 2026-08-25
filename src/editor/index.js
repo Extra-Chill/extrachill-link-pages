@@ -1,4 +1,12 @@
-import { createRoot, useEffect, useMemo, useState } from '@wordpress/element';
+import {
+	Children,
+	cloneElement,
+	createRoot,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+} from '@wordpress/element';
 import './style.scss';
 
 const DEFAULT_STYLES = {
@@ -17,14 +25,77 @@ const DEFAULT_STYLES = {
 	overlay: '1',
 };
 
+export const DEFAULT_LIMITS = {
+	sections: 10,
+	linksPerSection: 25,
+	sectionTitleLength: 200,
+	linkTextLength: 200,
+	urlLength: 2048,
+	bioLength: 5000,
+	displayNameLength: 200,
+};
+
 const text = ( value, fallback = '' ) =>
 	typeof value === 'string' ? value : fallback;
+const hasOwn = ( value, key ) =>
+	Object.prototype.hasOwnProperty.call( value, key );
 const tempId = ( type ) =>
 	`temp-${ type }-${ Date.now() }-${ Math.random()
 		.toString( 36 )
 		.slice( 2, 8 ) }`;
 const storageKey = ( adapter, id ) =>
 	`ec-link-page-editor:dirty:${ adapter }:${ id }`;
+let editorInstance = 0;
+
+const limitsFor = ( configured = {} ) => ( {
+	...DEFAULT_LIMITS,
+	...configured,
+} );
+
+export const validateDraft = ( draft, configuredLimits = {} ) => {
+	const limits = limitsFor( configuredLimits );
+	if ( ! draft || draft.identity.name.length > limits.displayNameLength ) {
+		return 'Display name exceeds the supported length.';
+	}
+	if ( draft.page.bio.length > limits.bioLength ) {
+		return 'Link Page bio exceeds the supported length.';
+	}
+	if ( draft.page.links.length > limits.sections ) {
+		return 'Link Page contains too many sections.';
+	}
+	for ( const section of draft.page.links ) {
+		if (
+			( section.section_title || '' ).length > limits.sectionTitleLength
+		) {
+			return 'A section title exceeds the supported length.';
+		}
+		if (
+			! Array.isArray( section.links ) ||
+			section.links.length > limits.linksPerSection
+		) {
+			return 'A section contains too many links.';
+		}
+		for ( const link of section.links ) {
+			const title = ( link.link_text || '' ).trim();
+			const url = ( link.link_url || '' ).trim();
+			if ( ! title || title.length > limits.linkTextLength ) {
+				return 'Every link needs a supported title.';
+			}
+			if ( ! url || url.length > limits.urlLength ) {
+				return 'Every link needs a supported URL.';
+			}
+			try {
+				const parsed = new URL( url );
+				if ( ! [ 'http:', 'https:' ].includes( parsed.protocol ) ) {
+					return 'Every link URL must use HTTP or HTTPS.';
+				}
+			} catch ( error ) {
+				return 'Every link needs a valid URL.';
+			}
+		}
+	}
+	return '';
+};
 
 export const normalizeDocument = ( value = {} ) => {
 	const page = value.link_page || value.page || {};
@@ -36,7 +107,10 @@ export const normalizeDocument = ( value = {} ) => {
 	return {
 		identity: {
 			id: identity.id || identity.term_id || 0,
-			name: text( identity.name || identity.title ),
+			name: hasOwn( identity, 'name' )
+				? text( identity.name )
+				: text( identity.title ),
+			hasName: hasOwn( identity, 'name' ) || hasOwn( identity, 'title' ),
 			slug: text( identity.slug ),
 			imageId: identity.image_id || identity.profile_image_id || 0,
 			imageUrl: text(
@@ -47,7 +121,10 @@ export const normalizeDocument = ( value = {} ) => {
 		},
 		page: {
 			id: page.link_page_id || page.id || 0,
-			bio: text( page.bio || identity.snapshot?.description ),
+			revision: text( page.revision ),
+			bio: hasOwn( page, 'bio' )
+				? text( page.bio )
+				: text( identity.snapshot?.description ),
 			links: Array.isArray( sections ) ? sections : [],
 			styles: {
 				...DEFAULT_STYLES,
@@ -64,15 +141,26 @@ export const normalizeDocument = ( value = {} ) => {
 	};
 };
 
-const Field = ( { label, children, help } ) => (
-	<label className="ec-lpe-field">
-		<span>{ label }</span>
-		{ children }
-		{ help && <small>{ help }</small> }
-	</label>
-);
+const Field = ( { label, children, help } ) => {
+	const generatedId = useId();
+	const childElements = Children.toArray( children );
+	const control = childElements[ 0 ];
+	const controlId = control.props.id || generatedId;
+	const helpId = `${ controlId }-help`;
+	return (
+		<div className="ec-lpe-field">
+			<label htmlFor={ controlId }>{ label }</label>
+			{ cloneElement( control, {
+				id: controlId,
+				...( help ? { 'aria-describedby': helpId } : {} ),
+			} ) }
+			{ childElements.slice( 1 ) }
+			{ help && <small id={ helpId }>{ help }</small> }
+		</div>
+	);
+};
 
-function LinksPanel( { draft, change } ) {
+function LinksPanel( { draft, change, limits } ) {
 	const updateSection = ( index, patch ) => {
 		const links = [ ...draft.page.links ];
 		links[ index ] = { ...links[ index ], ...patch };
@@ -80,7 +168,9 @@ function LinksPanel( { draft, change } ) {
 	};
 	const move = ( index, direction ) => {
 		const destination = index + direction;
-		if ( destination < 0 || destination >= draft.page.links.length ) return;
+		if ( destination < 0 || destination >= draft.page.links.length ) {
+			return;
+		}
 		const links = [ ...draft.page.links ];
 		[ links[ index ], links[ destination ] ] = [
 			links[ destination ],
@@ -99,6 +189,7 @@ function LinksPanel( { draft, change } ) {
 						<input
 							aria-label="Section title"
 							value={ section.section_title || '' }
+							maxLength={ limits.sectionTitleLength }
 							placeholder="Section title (optional)"
 							onChange={ ( event ) =>
 								updateSection( sectionIndex, {
@@ -149,6 +240,7 @@ function LinksPanel( { draft, change } ) {
 										aria-label="Link title"
 										required
 										value={ link.link_text || '' }
+										maxLength={ limits.linkTextLength }
 										placeholder="Link title"
 										onChange={ ( event ) => {
 											const items = [ ...section.links ];
@@ -166,6 +258,7 @@ function LinksPanel( { draft, change } ) {
 										type="url"
 										required
 										value={ link.link_url || '' }
+										maxLength={ limits.urlLength }
 										placeholder="https://..."
 										onChange={ ( event ) => {
 											const items = [ ...section.links ];
@@ -219,6 +312,9 @@ function LinksPanel( { draft, change } ) {
 						<button
 							type="button"
 							className="button-2"
+							disabled={
+								section.links.length >= limits.linksPerSection
+							}
 							onClick={ () =>
 								updateSection( sectionIndex, {
 									links: [
@@ -240,6 +336,7 @@ function LinksPanel( { draft, change } ) {
 			<button
 				type="button"
 				className="button-2"
+				disabled={ draft.page.links.length >= limits.sections }
 				onClick={ () =>
 					change( {
 						page: {
@@ -262,30 +359,43 @@ function LinksPanel( { draft, change } ) {
 	);
 }
 
-function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
+function CustomizePanel( { draft, change, adapter, runUpload, fonts } ) {
 	const styles = draft.page.styles;
 	const setting = ( key, value ) =>
-		change( {
-			page: {
-				...draft.page,
-				settings: { ...draft.page.settings, [ key ]: value },
+		change(
+			{
+				page: {
+					...draft.page,
+					settings: { ...draft.page.settings, [ key ]: value },
+				},
 			},
-		} );
+			'settings'
+		);
 	const style = ( key, value ) =>
-		change( {
-			page: { ...draft.page, styles: { ...styles, [ key ]: value } },
-		} );
+		change(
+			{
+				page: { ...draft.page, styles: { ...styles, [ key ]: value } },
+			},
+			'styles'
+		);
 	const upload = async ( event ) => {
 		const file = event.target.files?.[ 0 ];
-		if ( ! file || ! adapter.upload ) return;
-		const result = await adapter.upload( 'background', identityId, file );
-		change( {
-			page: {
-				...draft.page,
-				backgroundImageId: result.attachment_id,
-				backgroundImageUrl: result.url,
-			},
-		} );
+		if ( ! file || ! adapter.upload ) {
+			return;
+		}
+		await runUpload(
+			'background',
+			file,
+			( current, result ) => ( {
+				...current,
+				page: {
+					...current.page,
+					backgroundImageId: result.attachment_id,
+					backgroundImageUrl: result.url,
+				},
+			} ),
+			'background'
+		);
 	};
 	return (
 		<div className="ec-tab ec-tab--customize">
@@ -331,6 +441,43 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 					</Field>
 				</>
 			) }
+			<Field label="Title Size">
+				<input
+					type="range"
+					min="0.8"
+					max="3.5"
+					step="0.1"
+					value={
+						parseFloat( styles[ '--link-page-title-font-size' ] ) ||
+						2.1
+					}
+					onChange={ ( event ) =>
+						style(
+							'--link-page-title-font-size',
+							`${ event.target.value }em`
+						)
+					}
+				/>
+			</Field>
+			<Field label="Profile Image Size">
+				<input
+					type="range"
+					min="1"
+					max="100"
+					value={
+						parseInt(
+							styles[ '--link-page-profile-img-size' ],
+							10
+						) || 30
+					}
+					onChange={ ( event ) =>
+						style(
+							'--link-page-profile-img-size',
+							`${ event.target.value }%`
+						)
+					}
+				/>
+			</Field>
 			<Field label="Background Type">
 				<select
 					value={ styles[ '--link-page-background-type' ] }
@@ -392,6 +539,25 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 							}
 						/>
 					</Field>
+					<Field label="Gradient Direction">
+						<select
+							value={
+								styles[
+									'--link-page-background-gradient-direction'
+								] || 'to right'
+							}
+							onChange={ ( event ) =>
+								style(
+									'--link-page-background-gradient-direction',
+									event.target.value
+								)
+							}
+						>
+							<option value="to right">Left to Right</option>
+							<option value="to bottom">Top to Bottom</option>
+							<option value="135deg">Diagonal</option>
+						</select>
+					</Field>
 				</>
 			) }
 			{ styles[ '--link-page-background-type' ] === 'image' &&
@@ -402,6 +568,27 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 							accept="image/*"
 							onChange={ upload }
 						/>
+						{ draft.page.backgroundImageUrl && (
+							<button
+								type="button"
+								className="button-2"
+								onClick={ () =>
+									change(
+										( current ) => ( {
+											...current,
+											page: {
+												...current.page,
+												backgroundImageId: 0,
+												backgroundImageUrl: '',
+											},
+										} ),
+										'background'
+									)
+								}
+							>
+								Remove Background Image
+							</button>
+						) }
 					</Field>
 				) }
 			<Field label="Text Color">
@@ -425,6 +612,49 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 					}
 				/>
 			</Field>
+			<Field label="Link Text Color">
+				<input
+					type="color"
+					value={
+						styles[ '--link-page-link-text-color' ] || '#ffffff'
+					}
+					onChange={ ( event ) =>
+						style(
+							'--link-page-link-text-color',
+							event.target.value
+						)
+					}
+				/>
+			</Field>
+			<Field label="Button Hover Color">
+				<input
+					type="color"
+					value={
+						styles[ '--link-page-button-hover-bg-color' ] ||
+						'#53940b'
+					}
+					onChange={ ( event ) =>
+						style(
+							'--link-page-button-hover-bg-color',
+							event.target.value
+						)
+					}
+				/>
+			</Field>
+			<Field label="Button Border Color">
+				<input
+					type="color"
+					value={
+						styles[ '--link-page-button-border-color' ] || '#0b5394'
+					}
+					onChange={ ( event ) =>
+						style(
+							'--link-page-button-border-color',
+							event.target.value
+						)
+					}
+				/>
+			</Field>
 			<Field label="Button Radius">
 				<input
 					type="range"
@@ -442,16 +672,15 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 					}
 				/>
 			</Field>
-			<label>
+			<Field label="Overlay">
 				<input
 					type="checkbox"
 					checked={ styles.overlay !== '0' }
 					onChange={ ( event ) =>
 						style( 'overlay', event.target.checked ? '1' : '0' )
 					}
-				/>{ ' ' }
-				Overlay
-			</label>
+				/>
+			</Field>
 			<Field label="Image Shape">
 				<select
 					value={
@@ -470,34 +699,38 @@ function CustomizePanel( { draft, change, adapter, identityId, fonts } ) {
 	);
 }
 
-function AdvancedPanel( { draft, change } ) {
+function AdvancedPanel( { draft, change, subscriptions } ) {
 	const settings = draft.page.settings;
 	const set = ( key, value ) =>
-		change( {
-			page: { ...draft.page, settings: { ...settings, [ key ]: value } },
-		} );
+		change(
+			{
+				page: {
+					...draft.page,
+					settings: { ...settings, [ key ]: value },
+				},
+			},
+			'settings'
+		);
 	return (
 		<div className="ec-tab ec-tab--advanced">
-			<label>
+			<Field label="Enable Link Expiration Dates">
 				<input
 					type="checkbox"
 					checked={ !! settings.link_expiration_enabled }
 					onChange={ ( event ) =>
 						set( 'link_expiration_enabled', event.target.checked )
 					}
-				/>{ ' ' }
-				Enable Link Expiration Dates
-			</label>
-			<label>
+				/>
+			</Field>
+			<Field label="Enable Temporary Redirect">
 				<input
 					type="checkbox"
 					checked={ !! settings.redirect_enabled }
 					onChange={ ( event ) =>
 						set( 'redirect_enabled', event.target.checked )
 					}
-				/>{ ' ' }
-				Enable Temporary Redirect
-			</label>
+				/>
+			</Field>
 			{ settings.redirect_enabled && (
 				<Field label="Redirect URL">
 					<input
@@ -509,16 +742,15 @@ function AdvancedPanel( { draft, change } ) {
 					/>
 				</Field>
 			) }
-			<label>
+			<Field label="Disable Inline YouTube Player">
 				<input
 					type="checkbox"
 					checked={ settings.youtube_embed_enabled === false }
 					onChange={ ( event ) =>
 						set( 'youtube_embed_enabled', ! event.target.checked )
 					}
-				/>{ ' ' }
-				Disable Inline YouTube Player
-			</label>
+				/>
+			</Field>
 			<Field label="Meta Pixel ID">
 				<input
 					value={ settings.meta_pixel_id || '' }
@@ -535,21 +767,132 @@ function AdvancedPanel( { draft, change } ) {
 					}
 				/>
 			</Field>
+			{ subscriptions && (
+				<>
+					<Field label="Subscription Display">
+						<select
+							value={
+								settings.subscribe_display_mode || 'icon_modal'
+							}
+							onChange={ ( event ) =>
+								set(
+									'subscribe_display_mode',
+									event.target.value
+								)
+							}
+						>
+							<option value="icon_modal">Subscribe Icon</option>
+							<option value="inline_form">Inline Form</option>
+							<option value="disabled">Disabled</option>
+						</select>
+					</Field>
+					<Field label="Subscribe Form Description">
+						<textarea
+							rows="3"
+							value={ settings.subscribe_description || '' }
+							onChange={ ( event ) =>
+								set(
+									'subscribe_description',
+									event.target.value
+								)
+							}
+						/>
+					</Field>
+				</>
+			) }
 		</div>
 	);
 }
 
-function Preview( { draft } ) {
+export function Preview( {
+	draft,
+	fonts = [],
+	localFontsCss = '',
+	instanceId = 'ec-lpe-preview',
+} ) {
 	const style = { ...draft.page.styles };
-	if ( draft.page.backgroundImageUrl ) {
+	const backgroundType =
+		draft.page.styles[ '--link-page-background-type' ] || 'color';
+	style.backgroundImage = 'none';
+	style.backgroundColor =
+		draft.page.styles[ '--link-page-background-color' ] || '#121212';
+	if ( 'gradient' === backgroundType ) {
+		style.backgroundImage = `linear-gradient(${
+			draft.page.styles[ '--link-page-background-gradient-direction' ] ||
+			'to right'
+		}, ${
+			draft.page.styles[ '--link-page-background-gradient-start' ] ||
+			'#0b5394'
+		}, ${
+			draft.page.styles[ '--link-page-background-gradient-end' ] ||
+			'#53940b'
+		})`;
+	} else if ( 'image' === backgroundType && draft.page.backgroundImageUrl ) {
 		style.backgroundImage = `url(${ draft.page.backgroundImageUrl })`;
-		style.backgroundSize = 'cover';
+		style.backgroundSize =
+			draft.page.styles[ '--link-page-image-size' ] || 'cover';
+		style.backgroundPosition =
+			draft.page.styles[ '--link-page-image-position' ] ||
+			'center center';
+		style.backgroundRepeat =
+			draft.page.styles[ '--link-page-image-repeat' ] || 'no-repeat';
 	}
+	const renderSocials = () =>
+		draft.socials.length > 0 ? (
+			<div className="extrch-link-page-socials">
+				{ draft.socials.map( ( item, index ) => (
+					<a
+						key={ item.id || index }
+						href={ item.url || '#' }
+						className="extrch-social-icon"
+						aria-label={ item.label || item.type }
+					>
+						<i className={ item.icon_class } />
+					</a>
+				) ) }
+			</div>
+		) : null;
+	useEffect( () => {
+		const styleId = `${ instanceId }-local-fonts`;
+		const linkId = `${ instanceId }-remote-fonts`;
+		if ( localFontsCss ) {
+			const styleElement = document.createElement( 'style' );
+			styleElement.id = styleId;
+			styleElement.textContent = localFontsCss;
+			document.head.appendChild( styleElement );
+		}
+		const selected = [
+			draft.page.styles[ '--link-page-title-font-family' ],
+			draft.page.styles[ '--link-page-body-font-family' ],
+		];
+		const families = selected
+			.map(
+				( value ) =>
+					fonts.find( ( font ) => font.value === value )
+						?.google_font_param
+			)
+			.filter( ( value ) => value && 'local_default' !== value );
+		if ( families.length ) {
+			const link = document.createElement( 'link' );
+			link.id = linkId;
+			link.rel = 'stylesheet';
+			link.href = `https://fonts.googleapis.com/css2?family=${ [
+				...new Set( families ),
+			].join( '&family=' ) }&display=swap`;
+			document.head.appendChild( link );
+		}
+		return () => {
+			document.getElementById( styleId )?.remove();
+			document.getElementById( linkId )?.remove();
+		};
+	}, [ draft.page.styles, fonts, instanceId, localFontsCss ] );
 	return (
 		<div className="ec-preview-wrapper">
 			<div
 				className="extrch-link-page-container extrch-link-page-preview-container"
 				style={ style }
+				data-bg-type={ backgroundType }
+				data-background-image={ style.backgroundImage }
 			>
 				<div
 					className={ `extrch-link-page-content-wrapper${
@@ -575,21 +918,27 @@ function Preview( { draft } ) {
 								{ draft.page.bio }
 							</div>
 						) }
+						{ 'icon_modal' ===
+							( draft.page.settings.subscribe_display_mode ||
+								'icon_modal' ) && (
+							<button
+								type="button"
+								className="extrch-share-trigger extrch-subscribe-icon-trigger extrch-bell-page-trigger"
+								aria-label="Subscribe to this page"
+							>
+								Subscribe
+							</button>
+						) }
+						<button
+							type="button"
+							className="extrch-share-trigger extrch-share-page-trigger"
+							aria-label="Share this page"
+						>
+							Share
+						</button>
 					</div>
-					{ draft.socials.length > 0 && (
-						<div className="extrch-link-page-socials">
-							{ draft.socials.map( ( item, index ) => (
-								<a
-									key={ item.id || index }
-									href={ item.url || '#' }
-									className="extrch-social-icon"
-									aria-label={ item.label || item.type }
-								>
-									<i className={ item.icon_class } />
-								</a>
-							) ) }
-						</div>
-					) }
+					{ 'below' !== draft.page.settings.social_icons_position &&
+						renderSocials() }
 					{ draft.page.links.map( ( section, index ) => (
 						<div key={ section.id || index }>
 							{ section.section_title && (
@@ -600,23 +949,94 @@ function Preview( { draft } ) {
 							<div className="extrch-link-page-links">
 								{ ( section.links || [] ).map(
 									( link, itemIndex ) => (
-										<a
+										<div
 											key={ link.id || itemIndex }
-											href={ link.link_url || '#' }
-											className="extrch-link-page-link"
+											className="extrch-link-button-wrapper"
 										>
-											<span className="extrch-link-page-link-text">
-												{ link.link_text ||
-													'Untitled Link' }
-											</span>
-										</a>
+											<a
+												href={ link.link_url || '#' }
+												className="extrch-link-page-link"
+												rel="ugc noopener"
+											>
+												<span className="extrch-link-page-link-text">
+													{ link.link_text ||
+														'Untitled Link' }
+												</span>
+											</a>
+											<button
+												type="button"
+												className="extrch-share-trigger extrch-share-item-trigger"
+												aria-label="Share this link"
+											>
+												Share
+											</button>
+										</div>
 									)
 								) }
 							</div>
 						</div>
 					) ) }
+					{ 'below' === draft.page.settings.social_icons_position &&
+						renderSocials() }
+					{ 'inline_form' ===
+						draft.page.settings.subscribe_display_mode && (
+						<div className="extrch-link-page-subscribe-inline-form-container">
+							<h3 className="extrch-subscribe-header">
+								Subscribe
+							</h3>
+							<p className="extrch-subscribe-description">
+								{ draft.page.settings.subscribe_description ||
+									'Enter your email address to receive updates.' }
+							</p>
+							<div
+								className="extrch-subscribe-form"
+								role="presentation"
+							>
+								<input
+									type="email"
+									aria-label="Email Address"
+									placeholder="Your email address"
+								/>
+								<button
+									type="button"
+									className="button-1 button-small"
+								>
+									Subscribe
+								</button>
+							</div>
+						</div>
+					) }
 					<div className="extrch-link-page-powered">
 						Powered by Extra Chill
+					</div>
+					{ 'icon_modal' ===
+						( draft.page.settings.subscribe_display_mode ||
+							'icon_modal' ) && (
+						<div
+							id="extrch-subscribe-modal"
+							className="extrch-subscribe-modal extrch-modal extrch-modal-hidden"
+							role="dialog"
+							aria-modal="true"
+							aria-label="Subscribe"
+						>
+							<div className="extrch-subscribe-modal-overlay extrch-modal-overlay" />
+							<div className="extrch-subscribe-modal-content extrch-modal-content">
+								<p className="extrch-subscribe-description">
+									{ draft.page.settings
+										.subscribe_description ||
+										'Enter your email address to receive updates.' }
+								</p>
+							</div>
+						</div>
+					) }
+					<div
+						id="extrch-share-modal"
+						className="extrch-share-modal extrch-modal extrch-modal-hidden"
+					>
+						<div className="extrch-share-modal-overlay extrch-modal-overlay" />
+						<div className="extrch-share-modal-content extrch-modal-content">
+							Share this page
+						</div>
 					</div>
 				</div>
 			</div>
@@ -624,77 +1044,205 @@ function Preview( { draft } ) {
 	);
 }
 
-export function Editor( { configuration } ) {
-	const adapter = window.ecLinkPageEditorAdapters?.[ configuration.adapter ];
-	const identities = configuration.identities || [];
-	const [ identityId, setIdentityId ] = useState(
-		configuration.initialIdentity || identities[ 0 ]?.id
+export function QrModal( { url, error, onClose, restoreFocus, titleId } ) {
+	const dialogRef = useRef( null );
+	const closeRef = useRef( onClose );
+	closeRef.current = onClose;
+	useEffect( () => {
+		const dialog = dialogRef.current;
+		const focusable = dialog?.querySelectorAll( 'button, a[href]' ) || [];
+		focusable[ 0 ]?.focus();
+		const onKeyDown = ( event ) => {
+			if ( 'Escape' === event.key ) {
+				event.preventDefault();
+				closeRef.current();
+				return;
+			}
+			if ( 'Tab' !== event.key || focusable.length < 2 ) {
+				return;
+			}
+			const first = focusable[ 0 ];
+			const last = focusable[ focusable.length - 1 ];
+			if (
+				event.shiftKey &&
+				dialog.ownerDocument.activeElement === first
+			) {
+				event.preventDefault();
+				last.focus();
+			} else if (
+				! event.shiftKey &&
+				dialog.ownerDocument.activeElement === last
+			) {
+				event.preventDefault();
+				first.focus();
+			}
+		};
+		document.addEventListener( 'keydown', onKeyDown );
+		return () => {
+			document.removeEventListener( 'keydown', onKeyDown );
+			restoreFocus?.focus();
+		};
+	}, [ restoreFocus ] );
+	return (
+		<div className="ec-qr-modal" role="presentation">
+			<div
+				ref={ dialogRef }
+				className="ec-qr-modal__content"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby={ titleId }
+			>
+				<h2 id={ titleId }>Link Page QR Code</h2>
+				<button type="button" onClick={ onClose }>
+					Close
+				</button>
+				{ 'loading' === url && (
+					<p role="status">Generating QR Code...</p>
+				) }
+				{ error && <p role="alert">{ error }</p> }
+				{ url && 'loading' !== url && (
+					<>
+						<img src={ url } alt="Link Page QR Code" />
+						<a
+							className="button-2"
+							href={ url }
+							download="link-page-qr-code.png"
+						>
+							Download for Print
+						</a>
+					</>
+				) }
+			</div>
+		</div>
 	);
+}
+
+export function Editor( { configuration, adapter: suppliedAdapter } ) {
+	const adapter =
+		suppliedAdapter ||
+		window.ecLinkPageEditorAdapters?.[ configuration.adapter ];
+	const identities = configuration.identities || [];
+	const initialIdentity =
+		configuration.initialIdentity || identities[ 0 ]?.id;
+	const [ identityId, setIdentityId ] = useState( initialIdentity );
 	const [ draft, setDraft ] = useState( null );
 	const [ phase, setPhase ] = useState(
 		configuration.status === 'not_provisioned' ? 'absent' : 'loading'
 	);
 	const [ message, setMessage ] = useState( '' );
 	const [ qrCode, setQrCode ] = useState( '' );
+	const [ qrError, setQrError ] = useState( '' );
 	const [ dirty, setDirty ] = useState( false );
+	const dirtyAreasRef = useRef( new Set() );
+	const identityRef = useRef( initialIdentity );
+	const requestRef = useRef( 0 );
+	const revisionRef = useRef( 0 );
+	const savingRef = useRef( false );
+	const formRef = useRef( null );
+	const qrButtonRef = useRef( null );
+	const instanceRef = useRef( `ec-lpe-${ ++editorInstance }` );
+	const limits = limitsFor( configuration.limits );
+	const capabilities = {
+		identity: true,
+		bio: true,
+		socials: true,
+		backgroundMedia: true,
+		subscriptions: true,
+		...configuration.capabilities,
+	};
 	const panels = adapter?.panels || [];
 	const tabs = [
-		'info',
+		...( capabilities.identity || capabilities.bio || adapter?.infoPanel
+			? [ 'info' ]
+			: [] ),
 		'links',
-		'socials',
+		...( capabilities.socials ? [ 'socials' ] : [] ),
 		'customize',
 		'advanced',
 		...panels.map( ( panel ) => panel.id ),
 	];
-	const [ active, setActive ] = useState( 'info' );
-	const current =
-		identities.find(
-			( item ) => String( item.id ) === String( identityId )
-		) || {};
-
-	const accept = ( value ) => {
+	const [ active, setActive ] = useState( tabs[ 0 ] || 'links' );
+	const notifyDirty = ( value ) => {
+		setDirty( value );
+		adapter?.onDirtyChange?.( value );
+	};
+	const beginRequest = ( id = identityRef.current ) => ( {
+		id,
+		generation: ++requestRef.current,
+	} );
+	const isCurrentRequest = ( token ) =>
+		token.generation === requestRef.current &&
+		String( token.id ) === String( identityRef.current );
+	const accept = ( value, token ) => {
+		if ( ! isCurrentRequest( token ) ) {
+			return false;
+		}
 		const normalized = normalizeDocument( value );
+		const current =
+			identities.find(
+				( item ) => String( item.id ) === String( token.id )
+			) || {};
 		normalized.identity = {
 			...normalized.identity,
-			id: identityId,
-			name: normalized.identity.name || current.label || current.name,
+			id: token.id,
+			name: normalized.identity.hasName
+				? normalized.identity.name
+				: current.label || current.name || '',
 			imageUrl: normalized.identity.imageUrl || current.imageUrl,
 		};
 		normalized.page.publicUrl =
 			normalized.page.publicUrl || current.publicUrl || '';
 		setDraft( normalized );
-		setDirty( false );
+		revisionRef.current = 0;
+		dirtyAreasRef.current = new Set();
+		savingRef.current = false;
+		notifyDirty( false );
 		setPhase( 'ready' );
-		sessionStorage.removeItem(
-			storageKey( configuration.adapter, identityId )
+		window.sessionStorage.removeItem(
+			storageKey( configuration.adapter, token.id )
 		);
+		return true;
 	};
-	const load = async () => {
-		if ( ! adapter?.read || ! identityId ) {
+	const load = async ( requestedIdentity = identityRef.current ) => {
+		if ( ! adapter?.read || ! requestedIdentity ) {
 			setPhase( 'unavailable' );
 			return;
 		}
+		const token = beginRequest( requestedIdentity );
 		setPhase( 'loading' );
 		setMessage( '' );
 		try {
-			const saved = sessionStorage.getItem(
-				storageKey( configuration.adapter, identityId )
+			const saved = window.sessionStorage.getItem(
+				storageKey( configuration.adapter, requestedIdentity )
 			);
 			if (
 				saved &&
+				// eslint-disable-next-line no-alert -- Native confirmation protects recovered user edits.
 				window.confirm(
 					'You have unsaved Link Page changes. Restore them?'
 				)
 			) {
-				setDraft( JSON.parse( saved ) );
-				setDirty( true );
-				setPhase( 'ready' );
+				if ( isCurrentRequest( token ) ) {
+					const restored = JSON.parse( saved );
+					setDraft( restored.draft );
+					dirtyAreasRef.current = new Set(
+						restored.dirtyAreas || []
+					);
+					revisionRef.current = 1;
+					notifyDirty( true );
+					setPhase( 'ready' );
+				}
 				return;
 			}
-			accept( await adapter.read( identityId ) );
+			accept( await adapter.read( requestedIdentity ), token );
 		} catch ( error ) {
-			if ( error?.data?.status === 404 ) setPhase( 'absent' );
-			else {
+			if ( ! isCurrentRequest( token ) ) {
+				return;
+			}
+			if ( error?.data?.status === 404 ) {
+				notifyDirty( false );
+				setPhase( 'absent' );
+			} else {
 				setMessage(
 					error?.message || 'Link Page management could not load.'
 				);
@@ -703,7 +1251,13 @@ export function Editor( { configuration } ) {
 		}
 	};
 	useEffect( () => {
-		load();
+		identityRef.current = identityId;
+		load( identityId );
+		return () => {
+			identityRef.current = null;
+		};
+		// `load` intentionally binds this effect to the selected identity generation.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [ identityId ] );
 	useEffect( () => {
 		const warn = ( event ) => {
@@ -715,53 +1269,168 @@ export function Editor( { configuration } ) {
 		window.addEventListener( 'beforeunload', warn );
 		return () => window.removeEventListener( 'beforeunload', warn );
 	}, [ dirty ] );
-	const change = ( patch ) =>
+	const change = ( patch, area = 'page' ) =>
 		setDraft( ( value ) => {
-			const next = { ...value, ...patch };
-			setDirty( true );
-			sessionStorage.setItem(
-				storageKey( configuration.adapter, identityId ),
-				JSON.stringify( next )
+			if ( ! value || savingRef.current ) {
+				return value;
+			}
+			const next =
+				'function' === typeof patch
+					? patch( value )
+					: { ...value, ...patch };
+			++revisionRef.current;
+			dirtyAreasRef.current.add( area );
+			notifyDirty( true );
+			window.sessionStorage.setItem(
+				storageKey( configuration.adapter, identityRef.current ),
+				JSON.stringify( {
+					draft: next,
+					dirtyAreas: [ ...dirtyAreasRef.current ],
+				} )
 			);
-			adapter?.onDirtyChange?.( true );
 			return next;
 		} );
-	const save = async () => {
+	const save = async ( event ) => {
+		event?.preventDefault();
+		if ( ! draft || savingRef.current ) {
+			return;
+		}
+		const validationError = validateDraft( draft, limits );
+		if ( ! formRef.current?.checkValidity() || validationError ) {
+			formRef.current?.reportValidity();
+			setMessage(
+				validationError || 'Complete all required Link Page fields.'
+			);
+			return;
+		}
+		const token = beginRequest();
+		const revision = revisionRef.current;
+		const payload = draft;
+		savingRef.current = true;
 		setPhase( 'saving' );
 		setMessage( '' );
 		try {
-			accept( await adapter.save( identityId, draft ) );
-			setMessage( 'Saved!' );
-			adapter?.onDirtyChange?.( false );
+			const result = await adapter.save( token.id, payload, {
+				dirtyAreas: [ ...dirtyAreasRef.current ],
+			} );
+			if ( revision === revisionRef.current && accept( result, token ) ) {
+				setMessage( 'Saved!' );
+			}
 		} catch ( error ) {
-			setMessage( error?.message || 'Changes could not be saved.' );
-			setPhase( 'error' );
+			if ( isCurrentRequest( token ) ) {
+				savingRef.current = false;
+				setMessage( error?.message || 'Changes could not be saved.' );
+				setPhase( 'ready' );
+			}
 		}
 	};
 	const provision = async () => {
-		if ( ! adapter?.provision ) return;
+		if ( ! adapter?.provision || savingRef.current ) {
+			return;
+		}
+		const token = beginRequest();
+		savingRef.current = true;
 		setPhase( 'saving' );
 		try {
-			accept( await adapter.provision( identityId ) );
-			setMessage( 'Link Page created.' );
+			if ( accept( await adapter.provision( token.id ), token ) ) {
+				setMessage( 'Link Page created.' );
+			}
 		} catch ( error ) {
-			setMessage( error?.message || 'Link Page could not be created.' );
-			setPhase( 'error' );
+			if ( isCurrentRequest( token ) ) {
+				savingRef.current = false;
+				setMessage(
+					error?.message || 'Link Page could not be created.'
+				);
+				setPhase( 'absent' );
+			}
 		}
 	};
-	if ( ! adapter )
+	const runUpload = async ( type, file, applyResult, area = 'page' ) => {
+		if ( ! adapter?.upload || savingRef.current ) {
+			return;
+		}
+		const token = beginRequest();
+		const revision = revisionRef.current;
+		try {
+			const result = await adapter.upload( type, token.id, file );
+			if (
+				isCurrentRequest( token ) &&
+				revision === revisionRef.current
+			) {
+				change(
+					( currentDraft ) => applyResult( currentDraft, result ),
+					area
+				);
+			}
+		} catch ( error ) {
+			if ( isCurrentRequest( token ) ) {
+				setMessage( error?.message || 'Upload failed.' );
+			}
+		}
+	};
+	const switchIdentity = ( nextIdentity ) => {
+		if (
+			savingRef.current ||
+			String( nextIdentity ) === String( identityRef.current )
+		) {
+			return;
+		}
+		if (
+			dirty &&
+			// eslint-disable-next-line no-alert -- Native confirmation protects unsaved identity-scoped edits.
+			! window.confirm( 'Discard unsaved changes and switch?' )
+		) {
+			return;
+		}
+		window.sessionStorage.removeItem(
+			storageKey( configuration.adapter, identityRef.current )
+		);
+		++requestRef.current;
+		identityRef.current = nextIdentity;
+		revisionRef.current = 0;
+		dirtyAreasRef.current = new Set();
+		notifyDirty( false );
+		setDraft( null );
+		setMessage( '' );
+		setIdentityId( nextIdentity );
+	};
+	const openQrCode = async () => {
+		if (
+			! adapter?.qrCode ||
+			! draft?.page.publicUrl ||
+			savingRef.current
+		) {
+			return;
+		}
+		const token = beginRequest();
+		setQrError( '' );
+		setQrCode( 'loading' );
+		try {
+			const url = await adapter.qrCode( draft.page.publicUrl, 300 );
+			if ( isCurrentRequest( token ) ) {
+				setQrCode( url );
+			}
+		} catch ( error ) {
+			if ( isCurrentRequest( token ) ) {
+				setQrError( error?.message || 'QR Code generation failed.' );
+			}
+		}
+	};
+	if ( ! adapter ) {
 		return (
 			<div className="notice notice-warning">
 				<p>Link Page editor runtime is unavailable.</p>
 			</div>
 		);
-	if ( phase === 'loading' )
+	}
+	if ( phase === 'loading' ) {
 		return (
 			<div className="ec-editor-loading" role="status">
 				Loading editor...
 			</div>
 		);
-	if ( phase === 'absent' )
+	}
+	if ( phase === 'absent' ) {
 		return (
 			<div className="ec-lpe-empty">
 				<p>This identity does not have a Link Page yet.</p>
@@ -772,13 +1441,15 @@ export function Editor( { configuration } ) {
 				) }
 			</div>
 		);
-	if ( phase === 'unavailable' )
+	}
+	if ( phase === 'unavailable' ) {
 		return (
 			<div className="notice notice-warning">
 				<p>Link Page management is unavailable.</p>
 			</div>
 		);
-	if ( phase === 'error' )
+	}
+	if ( phase === 'error' ) {
 		return (
 			<div className="notice notice-error" role="alert">
 				<p>{ message }</p>
@@ -787,9 +1458,23 @@ export function Editor( { configuration } ) {
 				</button>
 			</div>
 		);
-	if ( ! draft ) return null;
+	}
+	if ( ! draft ) {
+		return null;
+	}
+	let saveLabel = 'Saved';
+	if ( 'saving' === phase ) {
+		saveLabel = 'Saving...';
+	} else if ( dirty ) {
+		saveLabel = 'Save changes';
+	}
 	return (
-		<div className="ec-editor">
+		<form
+			ref={ formRef }
+			className="ec-editor"
+			onSubmit={ save }
+			noValidate={ false }
+		>
 			<header className="ec-editor__header">
 				<div>
 					{ draft.page.publicUrl && (
@@ -805,14 +1490,9 @@ export function Editor( { configuration } ) {
 								<button
 									type="button"
 									className="button-2 button-small"
-									onClick={ async () =>
-										setQrCode(
-											await adapter.qrCode(
-												draft.page.publicUrl,
-												300
-											)
-										)
-									}
+									ref={ qrButtonRef }
+									disabled={ 'saving' === phase }
+									onClick={ openQrCode }
 								>
 									QR Code
 								</button>
@@ -825,15 +1505,10 @@ export function Editor( { configuration } ) {
 						<select
 							aria-label="Link Page identity"
 							value={ identityId }
-							onChange={ ( event ) => {
-								if (
-									! dirty ||
-									window.confirm(
-										'Discard unsaved changes and switch?'
-									)
-								)
-									setIdentityId( event.target.value );
-							} }
+							disabled={ 'saving' === phase }
+							onChange={ ( event ) =>
+								switchIdentity( event.target.value )
+							}
 						>
 							{ identities.map( ( item ) => (
 								<option key={ item.id } value={ item.id }>
@@ -844,152 +1519,328 @@ export function Editor( { configuration } ) {
 					) }
 					{ message && <span role="status">{ message }</span> }
 					<button
+						type="submit"
 						className="button-1"
 						disabled={ phase === 'saving' || ! dirty }
-						onClick={ save }
 					>
-						{ phase === 'saving'
-							? 'Saving...'
-							: dirty
-							? 'Save changes'
-							: 'Saved' }
+						{ saveLabel }
 					</button>
 				</div>
 			</header>
-			<div className="ec-editor__body">
-				<div className="ec-editor__sidebar">
-					<nav className="ec-lpe-tabs" aria-label="Editor sections">
-						{ tabs.map( ( tab ) => (
-							<button
-								type="button"
-								key={ tab }
-								className={ active === tab ? 'is-active' : '' }
-								onClick={ () => setActive( tab ) }
-							>
-								{ panels.find( ( item ) => item.id === tab )
-									?.label ||
-									tab[ 0 ].toUpperCase() + tab.slice( 1 ) }
-							</button>
-						) ) }
-					</nav>
-					<div className="ec-lpe-panel">
-						{ active === 'info' && (
-							<div className="ec-tab">
-								<Field label="Display Name">
-									<input
-										value={ draft.identity.name }
-										onChange={ ( event ) =>
-											change( {
-												identity: {
-													...draft.identity,
-													name: event.target.value,
-												},
-											} )
-										}
-									/>
-								</Field>
-								<Field label="Link Page Bio">
-									<textarea
-										rows="4"
-										value={ draft.page.bio }
-										onChange={ ( event ) =>
-											change( {
-												page: {
-													...draft.page,
-													bio: event.target.value,
-												},
-											} )
-										}
-									/>
-								</Field>
-								{ adapter.infoPanel?.( {
-									draft,
-									change,
-									identityId,
-								} ) }
-							</div>
-						) }
-						{ active === 'links' && (
-							<LinksPanel draft={ draft } change={ change } />
-						) }
-						{ active === 'socials' && (
-							<div className="ec-tab">
-								<p>
-									Social links are managed by the owning
-									platform.
-								</p>
-								{ adapter.socialsPanel?.( {
-									draft,
-									change,
-									identityId,
-									configuration,
-								} ) }
-							</div>
-						) }
-						{ active === 'customize' && (
-							<CustomizePanel
-								draft={ draft }
-								change={ change }
-								adapter={ adapter }
-								identityId={ identityId }
-								fonts={ configuration.fonts || [] }
-							/>
-						) }
-						{ active === 'advanced' && (
-							<AdvancedPanel draft={ draft } change={ change } />
-						) }
-						{ panels
-							.find( ( panel ) => panel.id === active )
-							?.render( { draft, change, identityId } ) }
-					</div>
-				</div>
-				<aside className="ec-editor__preview-region">
-					<h2>Preview</h2>
-					<p>Live preview of your public Link Page.</p>
-					<Preview draft={ draft } />
-				</aside>
-			</div>
-			{ qrCode && (
-				<div
-					className="ec-qr-modal"
-					role="dialog"
-					aria-modal="true"
-					aria-label="Link Page QR Code"
-				>
-					<div className="ec-qr-modal__content">
-						<button type="button" onClick={ () => setQrCode( '' ) }>
-							Close
-						</button>
-						<img src={ qrCode } alt="Link Page QR Code" />
-						<a
-							className="button-2"
-							href={ qrCode }
-							download="link-page-qr-code.png"
+			<fieldset
+				className="ec-editor__controls"
+				disabled={ 'saving' === phase }
+			>
+				<div className="ec-editor__body">
+					<div className="ec-editor__sidebar">
+						<div
+							className="ec-lpe-tabs"
+							role="tablist"
+							aria-label="Editor sections"
 						>
-							Download for Print
-						</a>
+							{ tabs.map( ( tab, index ) => (
+								<button
+									type="button"
+									key={ tab }
+									id={ `${ instanceRef.current }-tab-${ tab }` }
+									role="tab"
+									aria-selected={ active === tab }
+									aria-controls={ `${ instanceRef.current }-panel-${ tab }` }
+									tabIndex={ active === tab ? 0 : -1 }
+									className={
+										active === tab ? 'is-active' : ''
+									}
+									onClick={ () => setActive( tab ) }
+									onKeyDown={ ( event ) => {
+										let nextIndex = index;
+										if ( 'ArrowRight' === event.key ) {
+											nextIndex =
+												( index + 1 ) % tabs.length;
+										} else if (
+											'ArrowLeft' === event.key
+										) {
+											nextIndex =
+												( index - 1 + tabs.length ) %
+												tabs.length;
+										} else if ( 'Home' === event.key ) {
+											nextIndex = 0;
+										} else if ( 'End' === event.key ) {
+											nextIndex = tabs.length - 1;
+										} else {
+											return;
+										}
+										event.preventDefault();
+										setActive( tabs[ nextIndex ] );
+										event.currentTarget.parentElement
+											.querySelectorAll( '[role="tab"]' )
+											[ nextIndex ]?.focus();
+									} }
+								>
+									{ panels.find( ( item ) => item.id === tab )
+										?.label ||
+										tab[ 0 ].toUpperCase() +
+											tab.slice( 1 ) }
+								</button>
+							) ) }
+						</div>
+						<div
+							className="ec-lpe-panel"
+							id={ `${ instanceRef.current }-panel-${ active }` }
+							role="tabpanel"
+							aria-labelledby={ `${ instanceRef.current }-tab-${ active }` }
+							tabIndex="0"
+						>
+							{ active === 'info' && (
+								<div className="ec-tab">
+									{ capabilities.identity && (
+										<Field label="Display Name">
+											<input
+												value={ draft.identity.name }
+												maxLength={
+													limits.displayNameLength
+												}
+												onChange={ ( event ) =>
+													change(
+														{
+															identity: {
+																...draft.identity,
+																name: event
+																	.target
+																	.value,
+															},
+														},
+														'identity'
+													)
+												}
+											/>
+										</Field>
+									) }
+									{ capabilities.bio && (
+										<Field label="Link Page Bio">
+											<textarea
+												rows="4"
+												value={ draft.page.bio }
+												maxLength={ limits.bioLength }
+												onChange={ ( event ) =>
+													change(
+														{
+															page: {
+																...draft.page,
+																bio: event
+																	.target
+																	.value,
+															},
+														},
+														'bio'
+													)
+												}
+											/>
+										</Field>
+									) }
+									{ adapter.infoPanel?.( {
+										draft,
+										change,
+										identityId,
+										runUpload,
+									} ) }
+								</div>
+							) }
+							{ active === 'links' && (
+								<LinksPanel
+									draft={ draft }
+									change={ ( patch ) =>
+										change( patch, 'links' )
+									}
+									limits={ limits }
+								/>
+							) }
+							{ active === 'socials' && (
+								<div className="ec-tab">
+									<Field label="Social Icon Position">
+										<select
+											value={
+												draft.page.settings
+													.social_icons_position ||
+												'above'
+											}
+											onChange={ ( event ) =>
+												change(
+													{
+														page: {
+															...draft.page,
+															settings: {
+																...draft.page
+																	.settings,
+																social_icons_position:
+																	event.target
+																		.value,
+															},
+														},
+													},
+													'settings'
+												)
+											}
+										>
+											<option value="above">
+												Above Links
+											</option>
+											<option value="below">
+												Below Links
+											</option>
+										</select>
+									</Field>
+									<p>
+										Social links are managed by the owning
+										platform.
+									</p>
+									{ adapter.socialsPanel?.( {
+										draft,
+										change: ( patch ) =>
+											change( patch, 'socials' ),
+										identityId,
+										configuration,
+									} ) }
+								</div>
+							) }
+							{ active === 'customize' && (
+								<CustomizePanel
+									draft={ draft }
+									change={ change }
+									adapter={ adapter }
+									identityId={ identityId }
+									runUpload={ runUpload }
+									fonts={ configuration.fonts || [] }
+								/>
+							) }
+							{ active === 'advanced' && (
+								<AdvancedPanel
+									draft={ draft }
+									change={ change }
+									subscriptions={ capabilities.subscriptions }
+								/>
+							) }
+							{ panels
+								.find( ( panel ) => panel.id === active )
+								?.render( { draft, change, identityId } ) }
+						</div>
 					</div>
+					<aside className="ec-editor__preview-region">
+						<h2>Preview</h2>
+						<p>Live preview of your public Link Page.</p>
+						<Preview
+							draft={ draft }
+							fonts={ configuration.fonts || [] }
+							localFontsCss={ configuration.localFontsCss || '' }
+							instanceId={ instanceRef.current }
+						/>
+					</aside>
 				</div>
+			</fieldset>
+			{ qrCode && (
+				<QrModal
+					url={ qrCode }
+					error={ qrError }
+					onClose={ () => {
+						++requestRef.current;
+						setQrCode( '' );
+						setQrError( '' );
+					} }
+					restoreFocus={ qrButtonRef.current }
+					titleId={ `${ instanceRef.current }-qr-title` }
+				/>
 			) }
+		</form>
+	);
+}
+
+export function AdapterBoundary( { configuration } ) {
+	const [ adapter, setAdapter ] = useState(
+		() => window.ecLinkPageEditorAdapters?.[ configuration.adapter ] || null
+	);
+	const [ expired, setExpired ] = useState( false );
+	useEffect( () => {
+		if ( adapter ) {
+			return undefined;
+		}
+		const onRegistered = ( event ) => {
+			if ( event.detail?.name === configuration.adapter ) {
+				setAdapter(
+					window.ecLinkPageEditorAdapters?.[
+						configuration.adapter
+					] || null
+				);
+			}
+		};
+		document.addEventListener(
+			'ec-link-page-editor-adapter-registered',
+			onRegistered
+		);
+		const timeout = window.setTimeout(
+			() => setExpired( true ),
+			Math.max( 100, Number( configuration.adapterTimeout ) || 3000 )
+		);
+		return () => {
+			document.removeEventListener(
+				'ec-link-page-editor-adapter-registered',
+				onRegistered
+			);
+			window.clearTimeout( timeout );
+		};
+	}, [ adapter, configuration.adapter, configuration.adapterTimeout ] );
+	if ( adapter ) {
+		return <Editor configuration={ configuration } adapter={ adapter } />;
+	}
+	return (
+		<div
+			className={ `notice notice-${ expired ? 'warning' : 'info' }` }
+			role="status"
+		>
+			<p>
+				{ expired
+					? 'Link Page editor adapter is unavailable.'
+					: 'Loading Link Page editor...' }
+			</p>
 		</div>
 	);
 }
 
+export const registerAdapter = ( name, adapter ) => {
+	if ( ! name || ! adapter ) {
+		return false;
+	}
+	window.ecLinkPageEditorAdapters = window.ecLinkPageEditorAdapters || {};
+	window.ecLinkPageEditorAdapters[ name ] = adapter;
+	document.dispatchEvent(
+		new CustomEvent( 'ec-link-page-editor-adapter-registered', {
+			detail: { name },
+		} )
+	);
+	return true;
+};
+
 export const mount = ( target, configuration ) => {
-	if ( ! target ) return null;
+	if ( ! target ) {
+		return null;
+	}
 	const root = createRoot( target );
-	root.render( <Editor configuration={ configuration } /> );
+	root.render( <AdapterBoundary configuration={ configuration } /> );
 	return () => root.unmount();
 };
 
-window.ExtraChillLinkPageEditor = { mount, normalizeDocument };
 window.ecLinkPageEditorAdapters = window.ecLinkPageEditorAdapters || {};
+window.ExtraChillLinkPageEditor = { mount, normalizeDocument, registerAdapter };
+( window.ecLinkPageEditorPendingAdapters || [] ).forEach(
+	( [ name, adapter ] ) => registerAdapter( name, adapter )
+);
+window.ecLinkPageEditorPendingAdapters = [];
 
 const boot = () =>
 	document
 		.querySelectorAll( '[data-link-page-editor-config]' )
 		.forEach( ( node ) => {
-			if ( node.dataset.mounted ) return;
+			if ( node.dataset.mounted ) {
+				return;
+			}
 			const target = document.getElementById(
 				node.dataset.linkPageEditorConfig
 			);
@@ -998,6 +1849,8 @@ const boot = () =>
 				mount( target, JSON.parse( node.textContent ) );
 			}
 		} );
-document.readyState === 'loading'
-	? document.addEventListener( 'DOMContentLoaded', boot )
-	: boot();
+if ( 'loading' === document.readyState ) {
+	document.addEventListener( 'DOMContentLoaded', boot );
+} else {
+	boot();
+}

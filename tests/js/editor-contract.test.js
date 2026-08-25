@@ -12,9 +12,12 @@ const block = JSON.parse(
 );
 
 assert.strictEqual( block.name, 'extrachill/link-page-editor' );
+assert.strictEqual( block.supports.multiple, false );
+assert.strictEqual( block.supports.reusable, false );
+assert.strictEqual( block.editorScript, 'file:./block.js' );
 assert.match(
 	source,
-	/window\.ExtraChillLinkPageEditor = \{ mount, normalizeDocument \}/
+	/window\.ExtraChillLinkPageEditor = \{ mount, normalizeDocument, registerAdapter \}/
 );
 assert.match( source, /adapter\.read/ );
 assert.match( source, /adapter\.save/ );
