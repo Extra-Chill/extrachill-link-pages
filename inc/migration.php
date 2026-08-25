@@ -1056,6 +1056,7 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 	$stored = ec_link_page_migration_store_journal( $journal );
 	if ( is_wp_error( $stored ) ) {
 		return $stored; }
+	$failure = null;
 	try {
 		$result = ec_link_page_migration_in_blog(
 			$destination_blog_id,
@@ -1243,6 +1244,7 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 			}
 		);
 		if ( is_wp_error( $result ) ) {
+			$failure = $result;
 			throw new RuntimeException( $result->get_error_message() ); }
 		$drift_check = ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, false, $journal['caller_required_participant_ids'] );
 		if ( is_wp_error( $drift_check ) || ! hash_equals( $journal['fingerprint'], $drift_check['fingerprint'] ) ) {
@@ -1252,6 +1254,7 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 		foreach ( ec_link_page_migration_required_participants( $journal ) as $participant ) {
 			$result = ec_link_page_migration_invoke_participant( $participant, 'apply', $context );
 			if ( is_wp_error( $result ) ) {
+				$failure = $result;
 				throw new RuntimeException( $result->get_error_message() ); }
 		}
 		$stored = ec_link_page_migration_transition_status( $journal, array( 'applying' ), 'applied' );
@@ -1282,6 +1285,10 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 				'journal_id'     => $journal['id'],
 				'journal_status' => $journal['status'],
 				'rollback'       => is_wp_error( $rollback ) ? $rollback->get_error_data() : 'completed',
+				'cause'          => is_wp_error( $failure ) ? array(
+					'code' => $failure->get_error_code(),
+					'data' => $failure->get_error_data(),
+				) : null,
 			)
 		);
 	}
