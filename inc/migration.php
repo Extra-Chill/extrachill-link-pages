@@ -1138,9 +1138,9 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 							);
 							// phpcs:enable WordPress.DB.DirectDatabaseQuery
 							clean_post_cache( $id );
-							$actual                                                    = ec_link_page_migration_post_fields( get_post( $id ) );
-							$journal['entries'][ $position ]['finalization_post']       = $actual;
-							$stored                                                    = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
+							$actual = ec_link_page_migration_post_fields( get_post( $id ) );
+							$journal['entries'][ $position ]['finalization_post'] = $actual;
+							$stored = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
 							if ( is_wp_error( $stored ) ) {
 								return $stored;
 							}
