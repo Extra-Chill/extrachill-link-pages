@@ -51,11 +51,11 @@ final class MigrationTest extends TestCase {
 	}
 
 	public function test_participant_registration_is_named_complete_and_append_only(): void {
-		$callbacks = array_fill_keys( array( 'plan', 'apply', 'validate', 'rollback' ), '__return_true' );
-		$this->assertTrue( ec_register_link_page_migration_participant( 'fixture', $callbacks ) );
-		$this->assertSame( 'duplicate_link_page_migration_participant', ec_register_link_page_migration_participant( 'fixture', $callbacks )->get_error_code() );
+		$callbacks = array_fill_keys( array( 'claim_owner', 'plan', 'apply', 'validate', 'rollback' ), '__return_true' );
+		$this->assertTrue( ec_register_link_page_migration_participant( 'fixture', '1', $callbacks ) );
+		$this->assertSame( 'duplicate_link_page_migration_participant', ec_register_link_page_migration_participant( 'fixture', '1', $callbacks )->get_error_code() );
 		unset( $callbacks['rollback'] );
-		$this->assertSame( 'invalid_link_page_migration_participant', ec_register_link_page_migration_participant( 'incomplete', $callbacks )->get_error_code() );
+		$this->assertSame( 'invalid_link_page_migration_participant', ec_register_link_page_migration_participant( 'incomplete', '1', $callbacks )->get_error_code() );
 	}
 
 	public function test_nested_blog_context_is_restored_after_exception(): void {
@@ -68,5 +68,54 @@ final class MigrationTest extends TestCase {
 		$this->assertSame( 'link_page_migration_exception', $result->get_error_code() );
 		$this->assertSame( 4, get_current_blog_id() );
 		$this->assertSame( array(), $GLOBALS['_wp_switched_stack'] );
+	}
+
+	public function test_versioned_journal_entries_are_independent_and_verified(): void {
+		$journal = array(
+			'id'         => 'journal-one',
+			'network_id' => 1,
+			'status'     => 'applying',
+			'created_at' => '2026-08-25T00:00:00Z',
+			'entries'    => array(),
+		);
+		$this->assertTrue( ec_link_page_migration_store_journal( $journal ) );
+		$entry = array(
+			'sequence' => 1,
+			'type'     => 'file',
+			'applied'  => false,
+		);
+		$this->assertTrue( ec_link_page_migration_store_entry( $journal['id'], $entry ) );
+		$journal['entries'][] = $entry;
+		$this->assertTrue( ec_link_page_migration_store_journal( $journal ) );
+		$this->assertSame( $journal, array_intersect_key( ec_link_page_migration_get_journal( $journal['id'] ), $journal ) );
+		$GLOBALS['ec_test']['fail_network_option_write'] = true;
+		$this->assertSame( 'link_page_migration_journal_write_failed', ec_link_page_migration_store_entry( $journal['id'], array( 'sequence' => 2 ) )->get_error_code() );
+	}
+
+	public function test_missing_required_participant_blocks_rollback_contract(): void {
+		$result = ec_link_page_migration_require_participants(
+			array(
+				'required_participants' => array(
+					array(
+						'id'               => 'missing',
+						'contract_version' => '1',
+					),
+				),
+			)
+		);
+		$this->assertSame( 'link_page_migration_participant_contract_missing', $result->get_error_code() );
+	}
+
+	public function test_realpath_rejects_source_symlink_escape(): void {
+		$root = sys_get_temp_dir() . '/ec-migration-containment-' . uniqid();
+		mkdir( $root );
+		file_put_contents( $root . '/inside.txt', 'inside' );
+		$this->assertSame( realpath( $root . '/inside.txt' ), ec_link_page_migration_realpath( $root, $root . '/inside.txt' ) );
+		if ( function_exists( 'symlink' ) && @symlink( '/etc/passwd', $root . '/outside.txt' ) ) {
+			$this->assertFalse( ec_link_page_migration_realpath( $root, $root . '/outside.txt' ) );
+			unlink( $root . '/outside.txt' );
+		}
+		unlink( $root . '/inside.txt' );
+		rmdir( $root );
 	}
 }
