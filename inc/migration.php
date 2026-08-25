@@ -871,7 +871,8 @@ function ec_link_page_migration_owned_post( $entry ) {
 	}
 	if ( 'finalizing' === $phase ) {
 		$current = ec_link_page_migration_post_fields( $post );
-		return in_array( $current, array( $entry['phase_post'], $entry['expected_post'] ), true ) ? $post : new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination post no longer matches either known finalization state.', $entry );
+		$known   = array_filter( array( $entry['phase_post'] ?? null, $entry['finalization_post'] ?? null, $entry['expected_post'] ?? null ) );
+		return in_array( $current, $known, true ) ? $post : new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination post no longer matches a known finalization state.', $entry );
 	}
 	if ( 'inserted' === $phase && ! empty( $entry['phase_post'] ) && ec_link_page_migration_post_fields( $post ) !== $entry['phase_post'] ) {
 		return new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination post no longer matches journal-owned inserted state.', $entry );
@@ -1135,9 +1136,22 @@ function ec_apply_link_page_storage_migration_unlocked( $source_blog_id, $destin
 							);
 							// phpcs:enable WordPress.DB.DirectDatabaseQuery
 							clean_post_cache( $id );
-							$actual = ec_link_page_migration_post_fields( get_post( $id ) );
+							$actual                                                    = ec_link_page_migration_post_fields( get_post( $id ) );
+							$journal['entries'][ $position ]['finalization_post']       = $actual;
+							$stored                                                    = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
+							if ( is_wp_error( $stored ) ) {
+								return $stored;
+							}
 							if ( $actual !== $post ) {
-								return new WP_Error( 'link_page_migration_post_mismatch', 'Core did not preserve exact post fields.', array( 'post_id' => $id ) );
+								return new WP_Error(
+									'link_page_migration_post_mismatch',
+									'Core did not preserve exact post fields.',
+									array(
+										'post_id'  => $id,
+										'expected' => $post,
+										'actual'   => $actual,
+									)
+								);
 							}
 							$journal['entries'][ $position ]['phase'] = 'finalized';
 							$stored                                   = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
