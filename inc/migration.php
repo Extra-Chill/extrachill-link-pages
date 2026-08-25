@@ -234,7 +234,7 @@ function ec_link_page_migration_invoke_participant( $participant, $operation, $c
 }
 
 /** Build the complete read-only migration inventory. */
-function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, $include_readiness = true ) {
+function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, $include_readiness = true, $required_participant_ids = array() ) {
 	global $wpdb;
 	$source_blog_id      = absint( $source_blog_id );
 	$destination_blog_id = absint( $destination_blog_id );
@@ -265,15 +265,8 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 		$source_blog_id,
 		static function () use ( &$plan, $include_readiness ) {
 			global $wpdb;
-			$posts = get_posts(
-				array(
-					'post_type'      => EC_LINK_PAGE_POST_TYPE,
-					'post_status'    => 'any',
-					'posts_per_page' => -1,
-					'orderby'        => 'ID',
-					'order'          => 'ASC',
-				)
-			);
+			$posts = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->posts} WHERE post_type = %s ORDER BY ID ASC", EC_LINK_PAGE_POST_TYPE ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Exact all-status inventory.
+			if ( null === $posts || '' !== $wpdb->last_error ) { return new WP_Error( 'link_page_migration_inventory_failed', 'The exact Link Page inventory query failed.' ); }
 			$ids   = array_map(
 				static function ( $post ) {
 					return (int) $post->ID;
@@ -380,15 +373,7 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 					$attachment_ids[] = absint( $value ); }
 			}
 			foreach ( $ids as $id ) {
-				$children       = get_posts(
-					array(
-						'post_type'      => 'attachment',
-						'post_status'    => 'any',
-						'post_parent'    => $id,
-						'posts_per_page' => -1,
-						'fields'         => 'ids',
-					)
-				);
+				$children       = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->posts} WHERE post_type = 'attachment' AND post_parent = %d ORDER BY ID ASC", $id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Exact all-status child inventory.
 				$attachment_ids = array_merge( $attachment_ids, $children );
 			}
 			foreach ( ec_link_page_migration_participant_registry()->snapshot() as $participant ) {
@@ -485,6 +470,12 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 	);
 	if ( is_wp_error( $source ) ) {
 		return $source; }
+	$registered_participants = array();
+	foreach ( ec_link_page_migration_participant_registry()->snapshot() as $participant ) { $registered_participants[ $participant['name'] ] = $participant['contract_version']; }
+	foreach ( array_values( array_unique( array_map( 'sanitize_key', $required_participant_ids ) ) ) as $required_id ) {
+		if ( ! isset( $registered_participants[ $required_id ] ) ) { $plan['unsupported'][] = array( 'type' => 'required_participant_missing', 'participant' => $required_id ); }
+		else { $plan['caller_required_participants'][] = array( 'id' => $required_id, 'contract_version' => $registered_participants[ $required_id ] ); }
+	}
 	$destination = $include_readiness ? ec_link_page_migration_in_blog(
 		$destination_blog_id,
 		static function () use ( &$plan ) {
@@ -793,8 +784,8 @@ function ec_link_page_migration_journal_context( &$journal ) {
  *
  * @throws RuntimeException When a journaled mutation fails.
  */
-function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blog_id, $expected_fingerprint ) {
-	$plan = ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id );
+function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blog_id, $expected_fingerprint, $required_participant_ids = array() ) {
+	$plan = ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, true, $required_participant_ids );
 	if ( is_wp_error( $plan ) ) {
 		return $plan; }
 	if ( ! hash_equals( (string) $expected_fingerprint, $plan['fingerprint'] ) ) {
@@ -815,19 +806,7 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 		'entries'               => array(),
 		'errors'                => array(),
 		'participant_plans'     => $plan['participants'],
-		'required_participants' => array_values(
-			array_unique(
-				array_values( $plan['owner_claims'] ) + array_map(
-					static function ( $participant ) {
-						return array(
-							'id'               => $participant['name'],
-							'contract_version' => $participant['contract_version'],
-						); },
-					ec_link_page_migration_participant_registry()->snapshot()
-				),
-				SORT_REGULAR
-			)
-		),
+		'required_participants' => array_values( array_reduce( array_merge( array_values( $plan['owner_claims'] ), $plan['caller_required_participants'] ?? array() ), static function ( $carry, $item ) { $carry[ $item['id'] ] = $item; return $carry; }, array() ) ),
 		'source_inventory'      => $plan,
 	);
 	if ( false === $journal['attachment_map'] ) {
@@ -1117,8 +1096,8 @@ function ec_migrate_link_page_storage_ability( $input ) {
 	if ( 'rollback' === $mode ) {
 		return ec_rollback_link_page_storage_migration( $input['journal_id'] ?? '' ); }
 	if ( 'apply' === $mode ) {
-		return ec_apply_link_page_storage_migration( $input['source_blog_id'] ?? 0, $input['destination_blog_id'] ?? 0, $input['expected_fingerprint'] ?? '' ); }
-	return ec_plan_link_page_storage_migration( $input['source_blog_id'] ?? 0, $input['destination_blog_id'] ?? 0 );
+		return ec_apply_link_page_storage_migration( $input['source_blog_id'] ?? 0, $input['destination_blog_id'] ?? 0, $input['expected_fingerprint'] ?? '', $input['required_participants'] ?? array() ); }
+	return ec_plan_link_page_storage_migration( $input['source_blog_id'] ?? 0, $input['destination_blog_id'] ?? 0, true, $input['required_participants'] ?? array() );
 }
 
 /** Register the deliberately non-REST operator ability. */

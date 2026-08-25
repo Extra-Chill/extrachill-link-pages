@@ -23,6 +23,8 @@ class EcTestActivationException extends RuntimeException {}
 
 class EcTestWpdb {
 	public $postmeta = 'wp_postmeta';
+	public $posts = 'wp_posts';
+	public $last_error = '';
 	private $locks = array();
 	public function prepare( $query, ...$args ) { return vsprintf( str_replace( '%s', "'%s'", $query ), $args ); }
 	public function get_blog_prefix( $blog_id ) { return 'wp_' . (int) $blog_id . '_'; }
