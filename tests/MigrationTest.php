@@ -50,6 +50,14 @@ final class MigrationTest extends TestCase {
 		$this->assertNotSame( ec_link_page_migration_hash( array( 'a' => 1 ) ), ec_link_page_migration_hash( array( 'a' => 2 ) ) );
 	}
 
+	public function test_post_descriptor_normalizes_core_integer_fields(): void {
+		$post              = (object) array_fill_keys( array( 'ID', 'post_parent', 'menu_order' ), '7' );
+		$descriptor        = ec_link_page_migration_post_fields( $post );
+		$this->assertSame( 7, $descriptor['ID'] );
+		$this->assertSame( 7, $descriptor['post_parent'] );
+		$this->assertSame( 7, $descriptor['menu_order'] );
+	}
+
 	public function test_participant_registration_is_named_complete_and_append_only(): void {
 		$callbacks = array_fill_keys( array( 'claim_owner', 'plan', 'apply', 'validate', 'rollback' ), '__return_true' );
 		$this->assertTrue( ec_register_link_page_migration_participant( 'fixture', '1', $callbacks ) );
