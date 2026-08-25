@@ -1,6 +1,7 @@
 <?php
 
 define( 'ABSPATH', __DIR__ . '/' );
+define( 'ARRAY_A', 'ARRAY_A' );
 
 class WP_Error {
 	private $code;
@@ -21,9 +22,11 @@ class WP_Error {
 class EcTestActivationException extends RuntimeException {}
 
 class EcTestWpdb {
+	public $postmeta = 'wp_postmeta';
 	private $locks = array();
 	public function prepare( $query, ...$args ) { return vsprintf( str_replace( '%s', "'%s'", $query ), $args ); }
 	public function get_blog_prefix( $blog_id ) { return 'wp_' . (int) $blog_id . '_'; }
+	public function get_results( $query, $output = null ) { return array(); }
 	public function get_row( $query ) {
 		if ( preg_match( '/FROM wp_(\d+)_posts WHERE ID = (\d+)/', $query, $matches ) ) {
 			$post = $GLOBALS['ec_test']['blogs'][ (int) $matches[1] ]['posts'][ (int) $matches[2] ] ?? null;
@@ -173,6 +176,11 @@ function ec_test_reset() {
 		$property->setAccessible( true );
 		$property->setValue( $registry, array() );
 	}
+	$migration_registry = ec_link_page_migration_participant_registry();
+	$reflection = new ReflectionObject( $migration_registry );
+	$property = $reflection->getProperty( 'participants' );
+	$property->setAccessible( true );
+	$property->setValue( $migration_registry, array() );
 	add_filter( 'ec_link_page_terminate_request', static function ( $terminate, $url, $status ) { $GLOBALS['ec_test']['terminations'][] = array( $url, $status ); return false; }, 10, 3 );
 	add_filter( 'ec_link_page_storage_blog_id', static function () { return 4; } );
 }
@@ -328,6 +336,7 @@ function wp_delete_post( $post_id ) {
 	return (object) array( 'ID' => $post_id );
 }
 function wp_get_attachment_url( $id ) { return $id ? 'https://media.example/' . $id . '.jpg' : false; }
+function wp_upload_dir() { return array( 'basedir' => sys_get_temp_dir() . '/ec-link-pages-blog-' . get_current_blog_id() ); }
 function current_time() { return (int) ( $GLOBALS['ec_test']['now'] ?? time() ); }
 function current_datetime() { return new DateTimeImmutable( '@' . (int) ( $GLOBALS['ec_test']['now'] ?? time() ) ); }
 function get_option( $key, $default = false ) { return $GLOBALS['ec_test']['options'][ $key ] ?? $default; }
