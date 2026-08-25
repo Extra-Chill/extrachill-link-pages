@@ -16,6 +16,8 @@ tools/
 composer.json
 composer.lock
 package.json
+package-lock.json
+src/
 phpunit.xml
 phpunit.xml.dist
 phpcs.xml

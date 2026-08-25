@@ -178,6 +178,21 @@ function LinksPanel( { draft, change, limits } ) {
 		];
 		change( { page: { ...draft.page, links } } );
 	};
+	const moveLink = ( sectionIndex, linkIndex, direction ) => {
+		const destination = linkIndex + direction;
+		const section = draft.page.links[ sectionIndex ];
+		if ( destination < 0 || destination >= section.links.length ) {
+			return;
+		}
+		const items = [ ...section.links ];
+		[ items[ linkIndex ], items[ destination ] ] = [
+			items[ destination ],
+			items[ linkIndex ],
+		];
+		const sections = [ ...draft.page.links ];
+		sections[ sectionIndex ] = { ...section, links: items };
+		change( { page: { ...draft.page, links: sections } } );
+	};
 	return (
 		<div className="ec-tab ec-tab--links">
 			{ draft.page.links.map( ( section, sectionIndex ) => (
@@ -293,6 +308,26 @@ function LinksPanel( { draft, change, limits } ) {
 										/>
 									) }
 								</div>
+								<button
+									type="button"
+									disabled={ 0 === linkIndex }
+									onClick={ () =>
+										moveLink( sectionIndex, linkIndex, -1 )
+									}
+								>
+									Move Up
+								</button>
+								<button
+									type="button"
+									disabled={
+										linkIndex === section.links.length - 1
+									}
+									onClick={ () =>
+										moveLink( sectionIndex, linkIndex, 1 )
+									}
+								>
+									Move Down
+								</button>
 								<button
 									type="button"
 									aria-label="Remove link"
@@ -573,7 +608,9 @@ function CustomizePanel( { draft, change, adapter, runUpload, fonts } ) {
 								type="button"
 								className="button-2"
 								onClick={ () =>
-									change(
+									runUpload(
+										'background-remove',
+										null,
 										( current ) => ( {
 											...current,
 											page: {
@@ -809,6 +846,7 @@ export function Preview( {
 	fonts = [],
 	localFontsCss = '',
 	instanceId = 'ec-lpe-preview',
+	subscriptions = true,
 } ) {
 	const style = { ...draft.page.styles };
 	const backgroundType =
@@ -918,17 +956,18 @@ export function Preview( {
 								{ draft.page.bio }
 							</div>
 						) }
-						{ 'icon_modal' ===
-							( draft.page.settings.subscribe_display_mode ||
-								'icon_modal' ) && (
-							<button
-								type="button"
-								className="extrch-share-trigger extrch-subscribe-icon-trigger extrch-bell-page-trigger"
-								aria-label="Subscribe to this page"
-							>
-								Subscribe
-							</button>
-						) }
+						{ subscriptions &&
+							'icon_modal' ===
+								( draft.page.settings.subscribe_display_mode ||
+									'icon_modal' ) && (
+								<button
+									type="button"
+									className="extrch-share-trigger extrch-subscribe-icon-trigger extrch-bell-page-trigger"
+									aria-label="Subscribe to this page"
+								>
+									Subscribe
+								</button>
+							) }
 						<button
 							type="button"
 							className="extrch-share-trigger extrch-share-page-trigger"
@@ -978,57 +1017,60 @@ export function Preview( {
 					) ) }
 					{ 'below' === draft.page.settings.social_icons_position &&
 						renderSocials() }
-					{ 'inline_form' ===
-						draft.page.settings.subscribe_display_mode && (
-						<div className="extrch-link-page-subscribe-inline-form-container">
-							<h3 className="extrch-subscribe-header">
-								Subscribe
-							</h3>
-							<p className="extrch-subscribe-description">
-								{ draft.page.settings.subscribe_description ||
-									'Enter your email address to receive updates.' }
-							</p>
-							<div
-								className="extrch-subscribe-form"
-								role="presentation"
-							>
-								<input
-									type="email"
-									aria-label="Email Address"
-									placeholder="Your email address"
-								/>
-								<button
-									type="button"
-									className="button-1 button-small"
-								>
+					{ subscriptions &&
+						'inline_form' ===
+							draft.page.settings.subscribe_display_mode && (
+							<div className="extrch-link-page-subscribe-inline-form-container">
+								<h3 className="extrch-subscribe-header">
 									Subscribe
-								</button>
-							</div>
-						</div>
-					) }
-					<div className="extrch-link-page-powered">
-						Powered by Extra Chill
-					</div>
-					{ 'icon_modal' ===
-						( draft.page.settings.subscribe_display_mode ||
-							'icon_modal' ) && (
-						<div
-							id="extrch-subscribe-modal"
-							className="extrch-subscribe-modal extrch-modal extrch-modal-hidden"
-							role="dialog"
-							aria-modal="true"
-							aria-label="Subscribe"
-						>
-							<div className="extrch-subscribe-modal-overlay extrch-modal-overlay" />
-							<div className="extrch-subscribe-modal-content extrch-modal-content">
+								</h3>
 								<p className="extrch-subscribe-description">
 									{ draft.page.settings
 										.subscribe_description ||
 										'Enter your email address to receive updates.' }
 								</p>
+								<div
+									className="extrch-subscribe-form"
+									role="presentation"
+								>
+									<input
+										type="email"
+										aria-label="Email Address"
+										placeholder="Your email address"
+									/>
+									<button
+										type="button"
+										className="button-1 button-small"
+									>
+										Subscribe
+									</button>
+								</div>
 							</div>
-						</div>
-					) }
+						) }
+					<div className="extrch-link-page-powered">
+						Powered by Extra Chill
+					</div>
+					{ subscriptions &&
+						'icon_modal' ===
+							( draft.page.settings.subscribe_display_mode ||
+								'icon_modal' ) && (
+							<div
+								id="extrch-subscribe-modal"
+								className="extrch-subscribe-modal extrch-modal extrch-modal-hidden"
+								role="dialog"
+								aria-modal="true"
+								aria-label="Subscribe"
+							>
+								<div className="extrch-subscribe-modal-overlay extrch-modal-overlay" />
+								<div className="extrch-subscribe-modal-content extrch-modal-content">
+									<p className="extrch-subscribe-description">
+										{ draft.page.settings
+											.subscribe_description ||
+											'Enter your email address to receive updates.' }
+									</p>
+								</div>
+							</div>
+						) }
 					<div
 						id="extrch-share-modal"
 						className="extrch-share-modal extrch-modal extrch-modal-hidden"
@@ -1050,14 +1092,16 @@ export function QrModal( { url, error, onClose, restoreFocus, titleId } ) {
 	closeRef.current = onClose;
 	useEffect( () => {
 		const dialog = dialogRef.current;
-		const focusable = dialog?.querySelectorAll( 'button, a[href]' ) || [];
-		focusable[ 0 ]?.focus();
+		const getFocusable = () =>
+			dialog?.querySelectorAll( 'button:not([disabled]), a[href]' ) || [];
+		getFocusable()[ 0 ]?.focus();
 		const onKeyDown = ( event ) => {
 			if ( 'Escape' === event.key ) {
 				event.preventDefault();
 				closeRef.current();
 				return;
 			}
+			const focusable = getFocusable();
 			if ( 'Tab' !== event.key || focusable.length < 2 ) {
 				return;
 			}
@@ -1100,7 +1144,7 @@ export function QrModal( { url, error, onClose, restoreFocus, titleId } ) {
 					<p role="status">Generating QR Code...</p>
 				) }
 				{ error && <p role="alert">{ error }</p> }
-				{ url && 'loading' !== url && (
+				{ url && ! [ 'loading', 'error' ].includes( url ) && (
 					<>
 						<img src={ url } alt="Link Page QR Code" />
 						<a
@@ -1138,6 +1182,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 	const requestRef = useRef( 0 );
 	const revisionRef = useRef( 0 );
 	const savingRef = useRef( false );
+	const uploadingRef = useRef( false );
 	const formRef = useRef( null );
 	const qrButtonRef = useRef( null );
 	const instanceRef = useRef( `ec-lpe-${ ++editorInstance }` );
@@ -1150,7 +1195,17 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		subscriptions: true,
 		...configuration.capabilities,
 	};
-	const panels = adapter?.panels || [];
+	const isBusy = 'saving' === phase || 'uploading' === phase;
+	const configuredPanels = adapter?.panels || [];
+	const panels = configuredPanels.filter(
+		( panel ) =>
+			panel &&
+			typeof panel.id === 'string' &&
+			typeof panel.area === 'string' &&
+			'' !== panel.area.trim() &&
+			typeof panel.render === 'function'
+	);
+	const hasInvalidPanel = panels.length !== configuredPanels.length;
 	const tabs = [
 		...( capabilities.identity || capabilities.bio || adapter?.infoPanel
 			? [ 'info' ]
@@ -1162,6 +1217,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		...panels.map( ( panel ) => panel.id ),
 	];
 	const [ active, setActive ] = useState( tabs[ 0 ] || 'links' );
+	const activePanel = panels.find( ( panel ) => panel.id === active );
 	const notifyDirty = ( value ) => {
 		setDirty( value );
 		adapter?.onDirtyChange?.( value );
@@ -1196,6 +1252,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		revisionRef.current = 0;
 		dirtyAreasRef.current = new Set();
 		savingRef.current = false;
+		uploadingRef.current = false;
 		notifyDirty( false );
 		setPhase( 'ready' );
 		window.sessionStorage.removeItem(
@@ -1271,7 +1328,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 	}, [ dirty ] );
 	const change = ( patch, area = 'page' ) =>
 		setDraft( ( value ) => {
-			if ( ! value || savingRef.current ) {
+			if ( ! value || savingRef.current || uploadingRef.current ) {
 				return value;
 			}
 			const next =
@@ -1292,7 +1349,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		} );
 	const save = async ( event ) => {
 		event?.preventDefault();
-		if ( ! draft || savingRef.current ) {
+		if ( ! draft || savingRef.current || uploadingRef.current ) {
 			return;
 		}
 		const validationError = validateDraft( draft, limits );
@@ -1325,7 +1382,11 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		}
 	};
 	const provision = async () => {
-		if ( ! adapter?.provision || savingRef.current ) {
+		if (
+			! adapter?.provision ||
+			savingRef.current ||
+			uploadingRef.current
+		) {
 			return;
 		}
 		const token = beginRequest();
@@ -1346,24 +1407,28 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		}
 	};
 	const runUpload = async ( type, file, applyResult, area = 'page' ) => {
-		if ( ! adapter?.upload || savingRef.current ) {
+		if ( ! adapter?.upload || savingRef.current || uploadingRef.current ) {
 			return;
 		}
 		const token = beginRequest();
-		const revision = revisionRef.current;
+		uploadingRef.current = true;
+		setPhase( 'uploading' );
+		setMessage( 'Uploading...' );
 		try {
 			const result = await adapter.upload( type, token.id, file );
-			if (
-				isCurrentRequest( token ) &&
-				revision === revisionRef.current
-			) {
+			if ( isCurrentRequest( token ) ) {
+				uploadingRef.current = false;
 				change(
 					( currentDraft ) => applyResult( currentDraft, result ),
 					area
 				);
+				setPhase( 'ready' );
+				setMessage( '' );
 			}
 		} catch ( error ) {
 			if ( isCurrentRequest( token ) ) {
+				uploadingRef.current = false;
+				setPhase( 'ready' );
 				setMessage( error?.message || 'Upload failed.' );
 			}
 		}
@@ -1371,6 +1436,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 	const switchIdentity = ( nextIdentity ) => {
 		if (
 			savingRef.current ||
+			uploadingRef.current ||
 			String( nextIdentity ) === String( identityRef.current )
 		) {
 			return;
@@ -1398,7 +1464,8 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		if (
 			! adapter?.qrCode ||
 			! draft?.page.publicUrl ||
-			savingRef.current
+			savingRef.current ||
+			uploadingRef.current
 		) {
 			return;
 		}
@@ -1412,6 +1479,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 			}
 		} catch ( error ) {
 			if ( isCurrentRequest( token ) ) {
+				setQrCode( 'error' );
 				setQrError( error?.message || 'QR Code generation failed.' );
 			}
 		}
@@ -1420,6 +1488,13 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		return (
 			<div className="notice notice-warning">
 				<p>Link Page editor runtime is unavailable.</p>
+			</div>
+		);
+	}
+	if ( hasInvalidPanel ) {
+		return (
+			<div className="notice notice-warning" role="alert">
+				<p>Link Page editor extension configuration is invalid.</p>
 			</div>
 		);
 	}
@@ -1453,7 +1528,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 		return (
 			<div className="notice notice-error" role="alert">
 				<p>{ message }</p>
-				<button className="button-2" onClick={ load }>
+				<button className="button-2" onClick={ () => load() }>
 					Retry
 				</button>
 			</div>
@@ -1491,7 +1566,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 									type="button"
 									className="button-2 button-small"
 									ref={ qrButtonRef }
-									disabled={ 'saving' === phase }
+									disabled={ isBusy }
 									onClick={ openQrCode }
 								>
 									QR Code
@@ -1505,7 +1580,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 						<select
 							aria-label="Link Page identity"
 							value={ identityId }
-							disabled={ 'saving' === phase }
+							disabled={ isBusy }
 							onChange={ ( event ) =>
 								switchIdentity( event.target.value )
 							}
@@ -1521,16 +1596,13 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 					<button
 						type="submit"
 						className="button-1"
-						disabled={ phase === 'saving' || ! dirty }
+						disabled={ isBusy || ! dirty }
 					>
 						{ saveLabel }
 					</button>
 				</div>
 			</header>
-			<fieldset
-				className="ec-editor__controls"
-				disabled={ 'saving' === phase }
-			>
+			<fieldset className="ec-editor__controls" disabled={ isBusy }>
 				<div className="ec-editor__body">
 					<div className="ec-editor__sidebar">
 						<div
@@ -1719,9 +1791,19 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 									subscriptions={ capabilities.subscriptions }
 								/>
 							) }
-							{ panels
-								.find( ( panel ) => panel.id === active )
-								?.render( { draft, change, identityId } ) }
+							{ activePanel?.render( {
+								draft,
+								identityId,
+								change: ( patch ) =>
+									change( patch, activePanel.area ),
+								runUpload: ( type, file, applyResult ) =>
+									runUpload(
+										type,
+										file,
+										applyResult,
+										activePanel.area
+									),
+							} ) }
 						</div>
 					</div>
 					<aside className="ec-editor__preview-region">
@@ -1732,6 +1814,7 @@ export function Editor( { configuration, adapter: suppliedAdapter } ) {
 							fonts={ configuration.fonts || [] }
 							localFontsCss={ configuration.localFontsCss || '' }
 							instanceId={ instanceRef.current }
+							subscriptions={ capabilities.subscriptions }
 						/>
 					</aside>
 				</div>

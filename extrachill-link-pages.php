@@ -693,6 +693,9 @@ function ec_register_link_page_editor() {
 	if ( ! file_exists( $block . '/block.json' ) || ! file_exists( $block . '/index.asset.php' ) ) {
 		return;
 	}
+	if ( class_exists( 'WP_Block_Type_Registry' ) && WP_Block_Type_Registry::get_instance()->is_registered( 'extrachill/link-page-editor' ) ) {
+		return;
+	}
 	register_block_type( $block );
 }
 

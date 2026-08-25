@@ -150,7 +150,7 @@ describe( 'portable editor behavior', () => {
 		await act( async () => root.unmount() );
 	} );
 
-	it( 'ignores an old identity operation after switching identities', async () => {
+	it( 'disables identity interaction and applies a successful upload', async () => {
 		const pending = deferred();
 		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
 			read: jest.fn( async ( id ) =>
@@ -174,35 +174,27 @@ describe( 'portable editor behavior', () => {
 		await act( async () =>
 			fileInput.dispatchEvent( new Event( 'change', { bubbles: true } ) )
 		);
-		await act( async () => {
-			const selector = container.querySelector(
-				'[aria-label="Link Page identity"]'
-			);
-			selector.value = 'b';
-			selector.dispatchEvent( new Event( 'change', { bubbles: true } ) );
-		} );
-		await flush();
-		expect( container.textContent ).toContain(
-			'https://extrachill.link/b/'
-		);
+		expect(
+			container.querySelector( '[aria-label="Link Page identity"]' )
+				.disabled
+		).toBe( true );
+		expect(
+			container.querySelector( '.ec-editor__controls' ).disabled
+		).toBe( true );
 		await act( async () =>
 			pending.resolve( {
 				attachment_id: 99,
-				url: 'https://example.com/a-stale.jpg',
+				url: 'https://example.com/uploaded.jpg',
 			} )
 		);
 		expect(
 			container.querySelector( '.extrch-link-page-preview-container' )
 				.style.backgroundImage
-		).not.toContain( 'a-stale.jpg' );
-		await act( async () =>
-			[ ...container.querySelectorAll( '[role="tab"]' ) ]
-				.find( ( tab ) => 'Info' === tab.textContent )
-				.click()
-		);
-		expect( container.querySelector( '.ec-tab input' ).value ).toBe(
-			'Identity b'
-		);
+		).toContain( 'uploaded.jpg' );
+		expect(
+			container.querySelector( '[aria-label="Link Page identity"]' )
+				.disabled
+		).toBe( false );
 		await act( async () => root.unmount() );
 	} );
 
@@ -241,52 +233,6 @@ describe( 'portable editor behavior', () => {
 		expect(
 			window.ecLinkPageEditorAdapters[ 'test-adapter' ].read
 		).not.toHaveBeenCalled();
-		await act( async () => root.unmount() );
-	} );
-
-	it( 'ignores an upload response after local revision changes', async () => {
-		const pending = deferred();
-		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
-			read: jest.fn( async ( id ) =>
-				documentFor( id, {
-					css_vars: { '--link-page-background-type': 'image' },
-				} )
-			),
-			save: jest.fn(),
-			upload: jest.fn( () => pending.promise ),
-		};
-		const { container, root } = await renderEditor();
-		await act( async () =>
-			[ ...container.querySelectorAll( '[role="tab"]' ) ]
-				.find( ( tab ) => 'Customize' === tab.textContent )
-				.click()
-		);
-		const fileInput = container.querySelector( 'input[type="file"]' );
-		Object.defineProperty( fileInput, 'files', {
-			value: [ new File( [ 'x' ], 'image.png', { type: 'image/png' } ) ],
-		} );
-		await act( async () =>
-			fileInput.dispatchEvent( new Event( 'change', { bubbles: true } ) )
-		);
-		await act( async () =>
-			[ ...container.querySelectorAll( '[role="tab"]' ) ]
-				.find( ( tab ) => 'Info' === tab.textContent )
-				.click()
-		);
-		await input(
-			container.querySelector( 'input[value="Identity a"]' ),
-			'Newer edit'
-		);
-		await act( async () =>
-			pending.resolve( {
-				attachment_id: 99,
-				url: 'https://example.com/stale.jpg',
-			} )
-		);
-		expect(
-			container.querySelector( '.extrch-link-page-preview-container' )
-				.style.backgroundImage
-		).not.toContain( 'stale.jpg' );
 		await act( async () => root.unmount() );
 	} );
 
@@ -406,6 +352,16 @@ describe( 'portable editor behavior', () => {
 		expect( dialog.querySelector( 'button' ) ).toBe(
 			document.activeElement
 		);
+		const download = dialog.querySelector( 'a[href]' );
+		download.focus();
+		await act( async () =>
+			document.dispatchEvent(
+				new KeyboardEvent( 'keydown', { key: 'Tab', bubbles: true } )
+			)
+		);
+		expect( dialog.querySelector( 'button' ) ).toBe(
+			document.activeElement
+		);
 		await act( async () =>
 			document.dispatchEvent(
 				new KeyboardEvent( 'keydown', { key: 'Escape', bubbles: true } )
@@ -415,6 +371,27 @@ describe( 'portable editor behavior', () => {
 			container.querySelector( '.ec-qr-modal [role="dialog"]' )
 		).toBeNull();
 		expect( document.activeElement ).toBe( qrButton );
+		await act( async () => root.unmount() );
+	} );
+
+	it( 'clears QR loading state when generation fails', async () => {
+		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
+			read: jest.fn( async ( id ) => documentFor( id ) ),
+			save: jest.fn(),
+			qrCode: jest.fn( async () => {
+				throw new Error( 'QR failed.' );
+			} ),
+		};
+		const { container, root } = await renderEditor();
+		const qrButton = [ ...container.querySelectorAll( 'button' ) ].find(
+			( button ) => 'QR Code' === button.textContent
+		);
+		await act( async () => qrButton.click() );
+		await flush();
+		expect(
+			container.querySelector( '.ec-qr-modal [role="alert"]' ).textContent
+		).toContain( 'QR failed.' );
+		expect( container.textContent ).not.toContain( 'Generating QR Code' );
 		await act( async () => root.unmount() );
 	} );
 
@@ -446,6 +423,54 @@ describe( 'portable editor behavior', () => {
 		}
 	);
 
+	it( 'binds extension changes to their declared dirty area', async () => {
+		const save = jest.fn( async ( id ) => documentFor( id ) );
+		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
+			read: jest.fn( async ( id ) => documentFor( id ) ),
+			save,
+			panels: [
+				{
+					id: 'extension',
+					label: 'Extension',
+					area: 'extension-settings',
+					render: ( { draft, change } ) => (
+						<button
+							type="button"
+							onClick={ () =>
+								change( {
+									page: {
+										...draft.page,
+										bio: 'Extension change',
+									},
+								} )
+							}
+						>
+							Change Extension
+						</button>
+					),
+				},
+			],
+		};
+		const { container, root } = await renderEditor();
+		await act( async () =>
+			[ ...container.querySelectorAll( '[role="tab"]' ) ]
+				.find( ( tab ) => 'Extension' === tab.textContent )
+				.click()
+		);
+		await act( async () =>
+			[ ...container.querySelectorAll( 'button' ) ]
+				.find( ( button ) => 'Change Extension' === button.textContent )
+				.click()
+		);
+		await act( async () =>
+			container.querySelector( 'form' ).requestSubmit()
+		);
+		expect( save ).toHaveBeenCalledWith( 'a', expect.any( Object ), {
+			dirtyAreas: [ 'extension-settings' ],
+		} );
+		await act( async () => root.unmount() );
+	} );
+
 	it( 'exposes the full control and public-preview surface', async () => {
 		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
 			read: jest.fn( async ( id ) => documentFor( id ) ),
@@ -473,6 +498,26 @@ describe( 'portable editor behavior', () => {
 		expect(
 			container.querySelector( '#extrch-subscribe-modal' )
 		).not.toBeNull();
+		await act( async () => root.unmount() );
+	} );
+
+	it( 'omits subscription controls and preview when capability is disabled', async () => {
+		window.ecLinkPageEditorAdapters[ 'test-adapter' ] = {
+			read: jest.fn( async ( id ) => documentFor( id ) ),
+			save: jest.fn(),
+		};
+		const { container, root } = await renderEditor(
+			configuration( { capabilities: { subscriptions: false } } )
+		);
+		await act( async () =>
+			[ ...container.querySelectorAll( '[role="tab"]' ) ]
+				.find( ( tab ) => 'Advanced' === tab.textContent )
+				.click()
+		);
+		expect( container.textContent ).not.toContain( 'Subscription Display' );
+		expect(
+			container.querySelector( '#extrch-subscribe-modal' )
+		).toBeNull();
 		await act( async () => root.unmount() );
 	} );
 } );
