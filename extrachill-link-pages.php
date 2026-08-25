@@ -687,7 +687,32 @@ function ec_link_pages_runtime_error_notice() {
 	}
 }
 
+/** Register the portable editor block and public asset handle. */
+function ec_register_link_page_editor() {
+	$block = EXTRACHILL_LINK_PAGES_PLUGIN_DIR . 'build/editor';
+	if ( ! file_exists( $block . '/block.json' ) || ! file_exists( $block . '/index.asset.php' ) ) {
+		return;
+	}
+	register_block_type( $block );
+}
+
+/** Whether consumers can safely embed the portable editor. */
+function ec_link_page_editor_is_available() {
+	return wp_script_is( 'extrachill-link-page-editor-view-script', 'registered' );
+}
+
+/** Enqueue the portable editor for an owning-platform mount point. */
+function ec_enqueue_link_page_editor() {
+	if ( ! ec_link_page_editor_is_available() ) {
+		return false;
+	}
+	wp_enqueue_script( 'extrachill-link-page-editor-view-script' );
+	wp_enqueue_style( 'extrachill-link-page-editor-style' );
+	return true;
+}
+
 add_action( 'init', 'ec_register_link_page_post_type_if_ready', 5 );
+add_action( 'init', 'ec_register_link_page_editor', 20 );
 add_action( 'wp_initialize_site', 'ec_initialize_link_pages_site', 200, 2 );
 add_action( 'wp_loaded', 'ec_flush_queued_link_pages_sites', 200 );
 add_action( 'admin_notices', 'ec_link_pages_runtime_error_notice' );

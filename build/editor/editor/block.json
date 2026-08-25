@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "extrachill/link-page-editor",
+  "title": "Link Page Editor",
+  "category": "widgets",
+  "icon": "admin-links",
+  "description": "Portable Link Page editor embedded by an owning platform.",
+  "textdomain": "extrachill-link-pages",
+  "supports": {
+    "html": false
+  },
+  "viewScript": "file:./index.js",
+  "style": "file:./style-index.css",
+  "render": "file:./render.php"
+}

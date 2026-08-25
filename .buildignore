@@ -11,6 +11,7 @@ CLAUDE.md
 # Tests and development tooling.
 tests/
 vendor/
+node_modules/
 tools/
 composer.json
 composer.lock
@@ -25,7 +26,6 @@ homeboy.json
 
 # Non-runtime documentation and generated artifacts.
 docs/
-build/
 dist/
 *.zip
 *.tar.gz

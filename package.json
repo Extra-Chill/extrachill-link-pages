@@ -1,7 +1,12 @@
 {
-  "name": "extrachill-link-pages-tests",
+  "name": "extrachill-link-pages",
   "private": true,
   "scripts": {
-    "test": "node tests/js/assets.test.js && node tests/js/dom.test.js"
+    "build": "wp-scripts build src/editor/index.js --output-path=build/editor && cp src/editor/block.json src/editor/render.php build/editor/",
+    "lint:js": "wp-scripts lint-js src/editor tests/js",
+    "test": "node tests/js/assets.test.js && node tests/js/dom.test.js && node tests/js/editor-contract.test.js"
+  },
+  "devDependencies": {
+    "@wordpress/scripts": "^30.15.0"
   }
 }
