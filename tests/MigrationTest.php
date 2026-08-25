@@ -58,6 +58,14 @@ final class MigrationTest extends TestCase {
 		$this->assertSame( 'invalid_link_page_migration_participant', ec_register_link_page_migration_participant( 'incomplete', '1', $callbacks )->get_error_code() );
 	}
 
+	public function test_migration_ability_registers_in_the_core_site_category(): void {
+		ec_register_link_page_storage_migration_ability();
+		$ability = wp_get_ability( 'extrachill/migrate-link-page-storage' );
+		$this->assertIsArray( $ability );
+		$this->assertSame( 'site', $ability['category'] );
+		$this->assertFalse( $ability['meta']['show_in_rest'] );
+	}
+
 	public function test_nested_blog_context_is_restored_after_exception(): void {
 		$result = ec_link_page_migration_in_blog(
 			7,

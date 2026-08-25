@@ -686,6 +686,8 @@ function maybe_unserialize( $value ) {
 	return false !== $result || 'b:0;' === $value ? $result : $value; }
 function wp_register_ability( $name, $args ) {
 	$GLOBALS['ec_test']['abilities'][ $name ] = $args; }
+function wp_get_ability( $name ) {
+	return $GLOBALS['ec_test']['abilities'][ $name ] ?? null; }
 function current_user_can( $capability ) {
 	return true; }
 function current_time() {

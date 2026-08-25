@@ -1426,7 +1426,7 @@ function ec_register_link_page_storage_migration_ability() {
 		array(
 			'label'               => 'Migrate Link Page storage',
 			'description'         => 'Plan, apply, validate, or roll back a Link Page storage-site migration.',
-			'category'            => 'site-management',
+			'category'            => 'site',
 			'input_schema'        => array(
 				'type'       => 'object',
 				'properties' => array(
