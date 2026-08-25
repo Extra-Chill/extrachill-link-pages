@@ -25,6 +25,8 @@ defined( 'EXTRACHILL_LINK_PAGES_PLUGIN_BASENAME' ) || define( 'EXTRACHILL_LINK_P
 defined( 'EC_LINK_PAGE_POST_TYPE' ) || define( 'EC_LINK_PAGE_POST_TYPE', 'artist_link_page' );
 defined( 'EC_LINK_PAGE_OWNER_META_KEY' ) || define( 'EC_LINK_PAGE_OWNER_META_KEY', '_ec_link_page_owner_reference' );
 
+require_once EXTRACHILL_LINK_PAGES_PLUGIN_DIR . 'inc/migration.php';
+
 /**
  * Return the exact public function signatures in runtime API version 1.
  *
