@@ -34,6 +34,8 @@ require_once EXTRACHILL_LINK_PAGES_PLUGIN_DIR . 'inc/migration.php';
  */
 function ec_link_pages_runtime_function_contract() {
 	$contract = array(
+		'ec_link_page_migration_participant_registry'         => array( 'required' => 0, 'total' => 0 ),
+		'ec_register_link_page_migration_participant'         => array( 'required' => 3, 'total' => 4 ),
 		'ec_link_page_owner_compatibility_registry'        => array(
 			'required' => 0,
 			'total'    => 0,

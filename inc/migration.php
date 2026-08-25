@@ -7,7 +7,8 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'EC_LINK_PAGE_MIGRATION_JOURNAL_OPTION', 'ec_link_page_storage_migration_journals' );
+define( 'EC_LINK_PAGE_MIGRATION_JOURNAL_INDEX_OPTION', 'ec_link_page_storage_migration_journal_index_v1' );
+define( 'EC_LINK_PAGE_MIGRATION_JOURNAL_PREFIX', 'ec_link_page_storage_migration_journal_v1_' );
 define( 'EC_LINK_PAGE_MIGRATION_SCHEMA_VERSION', 1 );
 define( 'EC_LINK_PAGE_MIGRATION_JOURNAL_LIMIT', 25 );
 
@@ -18,11 +19,11 @@ function ec_link_page_migration_participant_registry() {
 		$registry = new class() {
 			private $participants = array();
 
-			public function register( $name, $callbacks, $priority ) {
-				if ( ! is_string( $name ) || 1 !== preg_match( '/^[a-z0-9][a-z0-9_-]*$/', $name ) || ! is_int( $priority ) || ! is_array( $callbacks ) ) {
+			public function register( $name, $contract_version, $callbacks, $priority ) {
+				if ( ! is_string( $name ) || 1 !== preg_match( '/^[a-z0-9][a-z0-9_-]*$/', $name ) || ! is_string( $contract_version ) || '' === $contract_version || ! is_int( $priority ) || ! is_array( $callbacks ) ) {
 					return new WP_Error( 'invalid_link_page_migration_participant', 'The migration participant registration is invalid.' );
 				}
-				foreach ( array( 'plan', 'apply', 'validate', 'rollback' ) as $operation ) {
+				foreach ( array( 'claim_owner', 'plan', 'apply', 'validate', 'rollback' ) as $operation ) {
 					if ( empty( $callbacks[ $operation ] ) || ! is_callable( $callbacks[ $operation ] ) ) {
 						return new WP_Error( 'invalid_link_page_migration_participant', 'Every migration participant callback is required.' );
 					}
@@ -30,7 +31,7 @@ function ec_link_page_migration_participant_registry() {
 				if ( isset( $this->participants[ $name ] ) ) {
 					return new WP_Error( 'duplicate_link_page_migration_participant', 'The migration participant is already registered.' );
 				}
-				$this->participants[ $name ] = compact( 'name', 'callbacks', 'priority' );
+				$this->participants[ $name ] = compact( 'name', 'contract_version', 'callbacks', 'priority' );
 				return true;
 			}
 
@@ -51,8 +52,8 @@ function ec_link_page_migration_participant_registry() {
 }
 
 /** Register one named owner of migration side effects. */
-function ec_register_link_page_migration_participant( $name, $callbacks, $priority = 10 ) {
-	return ec_link_page_migration_participant_registry()->register( $name, $callbacks, $priority );
+function ec_register_link_page_migration_participant( $name, $contract_version, $callbacks, $priority = 10 ) {
+	return ec_link_page_migration_participant_registry()->register( $name, $contract_version, $callbacks, $priority );
 }
 
 /** Execute in one blog while exactly restoring a nested multisite context. */
@@ -61,7 +62,10 @@ function ec_link_page_migration_in_blog( $blog_id, $callback ) {
 	if ( ! $blog_id || ! get_site( $blog_id ) || ! is_callable( $callback ) ) {
 		return new WP_Error( 'invalid_link_page_migration_blog', 'The migration blog context is invalid.' );
 	}
-	$switched = get_current_blog_id() !== $blog_id;
+	$entry_blog   = get_current_blog_id();
+	$entry_stack  = isset( $GLOBALS['_wp_switched_stack'] ) && is_array( $GLOBALS['_wp_switched_stack'] ) ? $GLOBALS['_wp_switched_stack'] : array();
+	$entry_switch = ! empty( $GLOBALS['switched'] );
+	$switched     = $entry_blog !== $blog_id;
 	if ( $switched && ! switch_to_blog( $blog_id ) ) {
 		return new WP_Error( 'link_page_migration_context_failed', 'The migration blog context could not be entered.' );
 	}
@@ -70,9 +74,7 @@ function ec_link_page_migration_in_blog( $blog_id, $callback ) {
 	} catch ( Throwable $throwable ) {
 		return new WP_Error( 'link_page_migration_exception', $throwable->getMessage() );
 	} finally {
-		if ( $switched ) {
-			restore_current_blog();
-		}
+		ec_restore_link_pages_site_context( $entry_blog, $entry_stack, $entry_switch );
 	}
 }
 
@@ -116,23 +118,43 @@ function ec_link_page_migration_meta_rows( $post_ids ) {
 	return is_array( $rows ) ? array_map(
 		static function ( $row ) {
 			return array(
-				'post_id'        => (int) $row['post_id'],
-				'meta_key'       => (string) $row['meta_key'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Descriptor field, not a query argument.
-				'meta_value'     => (string) $row['meta_value'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Descriptor field, not a query argument.
-				'semantic_value' => maybe_unserialize( $row['meta_value'] ),
+				'post_id'    => (int) $row['post_id'],
+				'meta_key'   => (string) $row['meta_key'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Descriptor field, not a query argument.
+				'meta_value' => (string) $row['meta_value'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Descriptor field, not a query argument.
 			);
 		},
 		$rows
 	) : array();
 }
 
+/** Resolve an existing path and prove it remains inside a real uploads root. */
+function ec_link_page_migration_realpath( $base, $path ) {
+	$real_base = realpath( $base );
+	$real_path = realpath( $path );
+	if ( false === $real_base || false === $real_path ) {
+		return false; }
+	$real_base = trailingslashit( wp_normalize_path( $real_base ) );
+	$real_path = wp_normalize_path( $real_path );
+	return 0 === strpos( $real_path . ( is_dir( $real_path ) ? '/' : '' ), $real_base ) ? $real_path : false;
+}
+
+/** Prove the nearest existing destination ancestor resolves inside uploads. */
+function ec_link_page_migration_destination_path_safe( $base, $path ) {
+	$ancestor = dirname( $path );
+	while ( ! file_exists( $ancestor ) && dirname( $ancestor ) !== $ancestor ) {
+		$ancestor = dirname( $ancestor ); }
+	return false !== ec_link_page_migration_realpath( $base, $ancestor );
+}
+
 /** Return every safe local file represented by attachment metadata. */
 function ec_link_page_migration_attachment_files( $attachment_id ) {
 	$relative = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
-	$meta     = wp_get_attachment_metadata( $attachment_id );
-	$backup   = get_post_meta( $attachment_id, '_wp_attachment_backup_sizes', true );
-	$paths    = array( $relative );
-	$dir      = dirname( $relative );
+	if ( '' === $relative ) {
+		return new WP_Error( 'missing_link_page_attached_file', 'An attachment has no _wp_attached_file value.', array( 'attachment_id' => $attachment_id ) ); }
+	$meta   = wp_get_attachment_metadata( $attachment_id );
+	$backup = get_post_meta( $attachment_id, '_wp_attachment_backup_sizes', true );
+	$paths  = array( $relative );
+	$dir    = dirname( $relative );
 	foreach ( is_array( $meta['sizes'] ?? null ) ? $meta['sizes'] : array() as $size ) {
 		if ( ! empty( $size['file'] ) ) {
 			$paths[] = ( '.' === $dir ? '' : $dir . '/' ) . $size['file'];
@@ -140,6 +162,10 @@ function ec_link_page_migration_attachment_files( $attachment_id ) {
 	}
 	if ( ! empty( $meta['original_image'] ) ) {
 		$paths[] = ( '.' === $dir ? '' : $dir . '/' ) . $meta['original_image'];
+	}
+	foreach ( array( 'thumb', 'source_image', 'animated_video', 'animated_video_poster' ) as $companion_key ) {
+		if ( ! empty( $meta[ $companion_key ] ) && is_string( $meta[ $companion_key ] ) ) {
+			$paths[] = ( '.' === $dir ? '' : $dir . '/' ) . $meta[ $companion_key ]; }
 	}
 	foreach ( is_array( $backup ) ? $backup : array() as $size ) {
 		if ( ! empty( $size['file'] ) ) {
@@ -160,9 +186,8 @@ function ec_link_page_migration_attachment_files( $attachment_id ) {
 				)
 			);
 		}
-		$absolute = wp_normalize_path( trailingslashit( $uploads['basedir'] ) . $path );
-		$base     = trailingslashit( wp_normalize_path( $uploads['basedir'] ) );
-		if ( 0 !== strpos( $absolute, $base ) || ! is_file( $absolute ) || ! is_readable( $absolute ) ) {
+		$absolute = ec_link_page_migration_realpath( $uploads['basedir'], trailingslashit( $uploads['basedir'] ) . $path );
+		if ( false === $absolute || ! is_file( $absolute ) || ! is_readable( $absolute ) ) {
 			return new WP_Error(
 				'missing_link_page_attachment_file',
 				'A required attachment file is missing.',
@@ -209,15 +234,21 @@ function ec_link_page_migration_invoke_participant( $participant, $operation, $c
 }
 
 /** Build the complete read-only migration inventory. */
-function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id ) {
+function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, $include_readiness = true ) {
 	global $wpdb;
 	$source_blog_id      = absint( $source_blog_id );
 	$destination_blog_id = absint( $destination_blog_id );
-	if ( ! is_multisite() || ! $source_blog_id || ! $destination_blog_id || $source_blog_id === $destination_blog_id || ! get_site( $source_blog_id ) || ! get_site( $destination_blog_id ) ) {
+	$source_site         = get_site( $source_blog_id );
+	$destination_site    = get_site( $destination_blog_id );
+	$network_id          = get_current_network_id();
+	$source_network      = (int) ( $source_site->network_id ?? $source_site->site_id ?? 0 );
+	$destination_network = (int) ( $destination_site->network_id ?? $destination_site->site_id ?? 0 );
+	if ( ! is_multisite() || ! $source_blog_id || ! $destination_blog_id || $source_blog_id === $destination_blog_id || ! $source_site || ! $destination_site || $network_id !== $source_network || $network_id !== $destination_network ) {
 		return new WP_Error( 'invalid_link_page_migration_sites', 'Distinct existing multisite source and destination blogs are required.' );
 	}
 	$plan   = array(
 		'schema_version'      => EC_LINK_PAGE_MIGRATION_SCHEMA_VERSION,
+		'network_id'          => $network_id,
 		'mode'                => 'plan',
 		'source_blog_id'      => $source_blog_id,
 		'destination_blog_id' => $destination_blog_id,
@@ -225,13 +256,14 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 		'meta'                => array(),
 		'attachments'         => array(),
 		'participants'        => array(),
+		'owner_claims'        => array(),
 		'collisions'          => array(),
 		'missing'             => array(),
 		'unsupported'         => array(),
 	);
 	$source = ec_link_page_migration_in_blog(
 		$source_blog_id,
-		static function () use ( &$plan ) {
+		static function () use ( &$plan, $include_readiness ) {
 			global $wpdb;
 			$posts = get_posts(
 				array(
@@ -271,6 +303,13 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 			$owners       = array();
 			$slugs        = array();
 			foreach ( $plan['posts'] as $post ) {
+				if ( (int) $post['post_parent'] && ! in_array( (int) $post['post_parent'], $ids, true ) ) {
+					$plan['unsupported'][] = array(
+						'type'        => 'external_link_page_parent',
+						'post_id'     => $post['ID'],
+						'post_parent' => (int) $post['post_parent'],
+					);
+				}
 				$owner = ec_get_link_page_owner( $post['ID'] );
 				if ( is_wp_error( $owner ) || ! $owner ) {
 					$plan['unsupported'][] = array(
@@ -281,7 +320,8 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 						'type'    => 'duplicate_owner',
 						'post_id' => $post['ID'],
 					); } else {
-						$owners[ $owner['reference'] ] = $post['ID']; }
+						$owners[ $owner['reference'] ] = $post['ID'];
+						$plan['owners'][ $post['ID'] ] = $owner; }
 					if ( isset( $slugs[ $post['post_name'] ] ) ) {
 						$plan['unsupported'][] = array(
 							'type'    => 'duplicate_slug',
@@ -289,7 +329,8 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 						); }
 					$slugs[ $post['post_name'] ] = $post['ID'];
 			}
-			$context              = array(
+			$context = array(
+				'mode'                => $include_readiness ? 'readiness' : 'source_inventory',
 				'source_blog_id'      => $plan['source_blog_id'],
 				'destination_blog_id' => $plan['destination_blog_id'],
 				'link_page_ids'       => $ids,
@@ -298,11 +339,45 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 				'journal_id'          => '',
 				'journal_record'      => null,
 			);
+			foreach ( $plan['owners'] ?? array() as $link_page_id => $owner ) {
+				$claims = array();
+				foreach ( ec_link_page_migration_participant_registry()->snapshot() as $participant ) {
+					$claimed = ec_link_page_migration_invoke_participant(
+						$participant,
+						'claim_owner',
+						array_merge(
+							$context,
+							array(
+								'link_page_id' => (int) $link_page_id,
+								'owner'        => $owner,
+							)
+						)
+					);
+					if ( is_wp_error( $claimed ) ) {
+						$plan['unsupported'][] = array(
+							'type'        => 'owner_claim_error',
+							'participant' => $participant['name'],
+							'post_id'     => (int) $link_page_id,
+						); } elseif ( true === $claimed ) {
+						$claims[] = array(
+							'id'               => $participant['name'],
+							'contract_version' => $participant['contract_version'],
+						); }
+				}
+				if ( 1 !== count( $claims ) ) {
+					$plan['unsupported'][] = array(
+						'type'    => 'owner_claim_count',
+						'post_id' => (int) $link_page_id,
+						'count'   => count( $claims ),
+					); } else {
+					$plan['owner_claims'][ $link_page_id ] = $claims[0]; }
+			}
 			$attachment_ids       = array();
 			$attachment_semantics = array();
 			foreach ( $plan['meta'] as $row ) {
-				if ( in_array( $row['meta_key'], array( '_thumbnail_id', '_link_page_background_image_id', '_link_page_profile_image_id' ), true ) && absint( $row['semantic_value'] ) ) {
-					$attachment_ids[] = absint( $row['semantic_value'] ); }
+				$value = maybe_unserialize( $row['meta_value'] );
+				if ( in_array( $row['meta_key'], array( '_thumbnail_id', '_link_page_background_image_id', '_link_page_profile_image_id' ), true ) && absint( $value ) ) {
+					$attachment_ids[] = absint( $value ); }
 			}
 			foreach ( $ids as $id ) {
 				$children       = get_posts(
@@ -410,7 +485,7 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 	);
 	if ( is_wp_error( $source ) ) {
 		return $source; }
-	$destination = ec_link_page_migration_in_blog(
+	$destination = $include_readiness ? ec_link_page_migration_in_blog(
 		$destination_blog_id,
 		static function () use ( &$plan ) {
 			$uploads = wp_upload_dir();
@@ -441,7 +516,13 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 			}
 			foreach ( $plan['attachments'] as $attachment ) {
 				foreach ( $attachment['files'] as $file ) {
-					if ( file_exists( trailingslashit( $uploads['basedir'] ) . $file['path'] ) ) {
+					$destination_path = trailingslashit( $uploads['basedir'] ) . $file['path'];
+					if ( ! ec_link_page_migration_destination_path_safe( $uploads['basedir'], $destination_path ) ) {
+						$plan['unsupported'][] = array(
+							'type' => 'unsafe_destination_path',
+							'path' => $file['path'],
+						); }
+					if ( file_exists( $destination_path ) ) {
 						$plan['collisions'][] = array(
 							'type' => 'file',
 							'id'   => $attachment['post']['ID'],
@@ -451,10 +532,10 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 			}
 			return true;
 		}
-	);
+	) : true;
 	if ( is_wp_error( $destination ) ) {
 		return $destination; }
-	$source_material     = array_intersect_key( $plan, array_flip( array( 'schema_version', 'source_blog_id', 'destination_blog_id', 'posts', 'meta', 'attachments', 'attachment_meta', 'participants', 'unsupported', 'missing' ) ) );
+	$source_material     = array_intersect_key( $plan, array_flip( array( 'schema_version', 'network_id', 'source_blog_id', 'destination_blog_id', 'posts', 'meta', 'owners', 'owner_claims', 'attachments', 'attachment_meta', 'participants', 'unsupported', 'missing' ) ) );
 	$plan['fingerprint'] = ec_link_page_migration_hash( $source_material );
 	$plan['ready']       = empty( $plan['collisions'] ) && empty( $plan['missing'] ) && empty( $plan['unsupported'] );
 	$plan['counts']      = array(
@@ -466,21 +547,93 @@ function ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog
 	return $plan;
 }
 
-/** Persist a bounded, non-autoloaded network journal collection. */
-function ec_link_page_migration_store_journal( $journal ) {
-	$journals                   = get_site_option( EC_LINK_PAGE_MIGRATION_JOURNAL_OPTION, array() );
-	$journals                   = is_array( $journals ) ? $journals : array();
-	$journals[ $journal['id'] ] = $journal;
-	if ( count( $journals ) > EC_LINK_PAGE_MIGRATION_JOURNAL_LIMIT ) {
-		$journals = array_slice( $journals, -EC_LINK_PAGE_MIGRATION_JOURNAL_LIMIT, null, true );
+/** Execute one network journal write under its advisory lock. */
+function ec_link_page_migration_with_journal_lock( $callback ) {
+	global $wpdb;
+	$name = 'ec_link_page_migration_journal:' . get_current_network_id();
+	if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $name ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Network journal serialization.
+		return new WP_Error( 'link_page_migration_journal_lock_failed', 'The network migration journal lock could not be acquired.' );
 	}
-	return update_network_option( null, EC_LINK_PAGE_MIGRATION_JOURNAL_OPTION, $journals );
+	try {
+		$result = call_user_func( $callback ); } catch ( Throwable $throwable ) {
+		$result = new WP_Error( 'link_page_migration_journal_write_exception', $throwable->getMessage() ); }
+		$released = $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Matching advisory lock release.
+		return '1' === (string) $released ? $result : new WP_Error( 'link_page_migration_journal_lock_release_failed', 'The network migration journal lock could not be released.' );
 }
 
-/** Read one durable migration journal. */
+/** Return the versioned option key for one journal or entry. */
+function ec_link_page_migration_journal_key( $journal_id, $sequence = 0 ) {
+	$key = EC_LINK_PAGE_MIGRATION_JOURNAL_PREFIX . sanitize_key( $journal_id );
+	return $sequence ? $key . '_entry_' . absint( $sequence ) : $key;
+}
+
+/** Persist and read back one journal header plus its protected index record. */
+function ec_link_page_migration_store_journal( $journal ) {
+	return ec_link_page_migration_with_journal_lock(
+		static function () use ( $journal ) {
+			$header = $journal;
+			unset( $header['entries'] );
+			$header['entry_count'] = count( $journal['entries'] ?? array() );
+			$key                   = ec_link_page_migration_journal_key( $journal['id'] );
+			update_network_option( null, $key, $header );
+			if ( get_network_option( null, $key, null ) !== $header ) {
+				return new WP_Error( 'link_page_migration_journal_write_failed', 'The durable migration journal header could not be verified.' );
+			}
+			$index                   = get_network_option( null, EC_LINK_PAGE_MIGRATION_JOURNAL_INDEX_OPTION, array() );
+			$index                   = is_array( $index ) ? $index : array();
+			$index[ $journal['id'] ] = array(
+				'status'     => $journal['status'],
+				'created_at' => $journal['created_at'],
+				'network_id' => $journal['network_id'],
+			);
+			$removable               = array_keys(
+				array_filter(
+					$index,
+					static function ( $item ) {
+						return 'rolled_back' === ( $item['status'] ?? '' );
+					}
+				)
+			);
+			$index_count             = count( $index );
+			while ( $index_count > EC_LINK_PAGE_MIGRATION_JOURNAL_LIMIT && $removable ) {
+				unset( $index[ array_shift( $removable ) ] );
+				$index_count = count( $index );
+			}
+			update_network_option( null, EC_LINK_PAGE_MIGRATION_JOURNAL_INDEX_OPTION, $index );
+			if ( get_network_option( null, EC_LINK_PAGE_MIGRATION_JOURNAL_INDEX_OPTION, null ) !== $index ) {
+				return new WP_Error( 'link_page_migration_journal_write_failed', 'The durable migration journal index could not be verified.' );
+			}
+			return true;
+		}
+	);
+}
+
+/** Persist and read back one independently addressed journal mutation entry. */
+function ec_link_page_migration_store_entry( $journal_id, $entry ) {
+	return ec_link_page_migration_with_journal_lock(
+		static function () use ( $journal_id, $entry ) {
+			$key = ec_link_page_migration_journal_key( $journal_id, $entry['sequence'] );
+			update_network_option( null, $key, $entry );
+			return get_network_option( null, $key, null ) === $entry ? true : new WP_Error( 'link_page_migration_journal_write_failed', 'A durable migration mutation entry could not be verified.' );
+		}
+	);
+}
+
+/** Read one network-affine durable migration journal. */
 function ec_link_page_migration_get_journal( $journal_id ) {
-	$journals = get_site_option( EC_LINK_PAGE_MIGRATION_JOURNAL_OPTION, array() );
-	return is_array( $journals ) && isset( $journals[ $journal_id ] ) ? $journals[ $journal_id ] : new WP_Error( 'link_page_migration_journal_not_found', 'The migration journal was not found.' );
+	$header = get_network_option( null, ec_link_page_migration_journal_key( $journal_id ), null );
+	if ( ! is_array( $header ) ) {
+		return new WP_Error( 'link_page_migration_journal_not_found', 'The migration journal was not found.' ); }
+	if ( get_current_network_id() !== (int) $header['network_id'] ) {
+		return new WP_Error( 'link_page_migration_network_mismatch', 'The migration journal belongs to another network.' ); }
+	$header['entries'] = array();
+	for ( $sequence = 1; $sequence <= (int) $header['entry_count']; ++$sequence ) {
+		$entry = get_network_option( null, ec_link_page_migration_journal_key( $journal_id, $sequence ), null );
+		if ( ! is_array( $entry ) ) {
+			return new WP_Error( 'link_page_migration_journal_incomplete', 'A durable migration mutation entry is missing.' ); }
+		$header['entries'][] = $entry;
+	}
+	return $header;
 }
 
 /** Append intent, persist, execute, then mark applied. */
@@ -488,21 +641,46 @@ function ec_link_page_migration_mutate( &$journal, $entry, $callback ) {
 	$entry['applied']     = false;
 	$entry['sequence']    = count( $journal['entries'] ) + 1;
 	$journal['entries'][] = $entry;
-	if ( ! ec_link_page_migration_store_journal( $journal ) ) {
-		return new WP_Error( 'link_page_migration_journal_write_failed', 'Mutation intent could not be journaled.' ); }
+	$stored               = ec_link_page_migration_store_entry( $journal['id'], $entry );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
+	$stored = ec_link_page_migration_store_journal( $journal );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
 	$result = call_user_func( $callback );
 	if ( is_wp_error( $result ) || false === $result ) {
 		return is_wp_error( $result ) ? $result : new WP_Error( 'link_page_migration_mutation_failed', 'A journaled migration mutation failed.' ); }
 	$journal['entries'][ count( $journal['entries'] ) - 1 ]['applied'] = true;
-	if ( ! ec_link_page_migration_store_journal( $journal ) ) {
-		return new WP_Error( 'link_page_migration_journal_write_failed', 'Applied mutation state could not be journaled.' ); }
+	$stored = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ count( $journal['entries'] ) - 1 ] );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
 	return $result;
+}
+
+/** Require every journaled participant ID and contract version. */
+function ec_link_page_migration_require_participants( $journal ) {
+	$registered = array();
+	foreach ( ec_link_page_migration_participant_registry()->snapshot() as $participant ) {
+		$registered[ $participant['name'] ] = $participant; }
+	foreach ( $journal['required_participants'] ?? array() as $required ) {
+		if ( ! isset( $registered[ $required['id'] ] ) || $registered[ $required['id'] ]['contract_version'] !== $required['contract_version'] ) {
+			return new WP_Error( 'link_page_migration_participant_contract_missing', 'A journal-required migration participant or contract version is unavailable.', $required );
+		}
+	}
+	return true;
 }
 
 /** Roll back core-owned journal entries in reverse dependency order. */
 function ec_link_page_migration_compensate( &$journal ) {
+	$required = ec_link_page_migration_require_participants( $journal );
+	if ( is_wp_error( $required ) ) {
+		$journal['status'] = 'failed';
+		$stored = ec_link_page_migration_store_journal( $journal );
+		return is_wp_error( $stored ) ? $stored : $required; }
 	$journal['status'] = 'rolling_back';
-	ec_link_page_migration_store_journal( $journal );
+	$stored            = ec_link_page_migration_store_journal( $journal );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
 	$errors  = array();
 	$context = ec_link_page_migration_journal_context( $journal );
 	foreach ( array_reverse( ec_link_page_migration_participant_registry()->snapshot() ) as $participant ) {
@@ -511,7 +689,20 @@ function ec_link_page_migration_compensate( &$journal ) {
 			$errors[] = array(
 				'participant' => $participant['name'],
 				'error'       => $result->get_error_message(),
-			); }
+			); } else {
+			foreach ( $journal['entries'] as &$participant_entry ) {
+				if ( 'participant' === ( $participant_entry['type'] ?? '' ) && ( $participant_entry['participant'] ?? '' ) === $participant['name'] && ! empty( $participant_entry['applied'] ) ) {
+					$participant_entry['rolled_back'] = true;
+					$stored                           = ec_link_page_migration_store_entry( $journal['id'], $participant_entry );
+					if ( is_wp_error( $stored ) ) {
+						$errors[] = array(
+							'participant' => $participant['name'],
+							'error'       => $stored->get_error_message(),
+						); }
+				}
+			}
+			unset( $participant_entry );
+			}
 	}
 	for ( $i = count( $journal['entries'] ) - 1; $i >= 0; --$i ) {
 		$entry =& $journal['entries'][ $i ];
@@ -521,16 +712,31 @@ function ec_link_page_migration_compensate( &$journal ) {
 			continue; }
 		$result = ec_link_page_migration_in_blog(
 			$journal['destination_blog_id'],
-			static function () use ( $entry ) {
+			static function () use ( $entry, $journal ) {
 				if ( 'file' === $entry['type'] ) {
+					$uploads = wp_upload_dir();
+					$real    = file_exists( $entry['path'] ) ? ec_link_page_migration_realpath( $uploads['basedir'], $entry['path'] ) : false;
+					if ( file_exists( $entry['path'] ) && ( false === $real || ! hash_equals( $entry['sha256'], hash_file( 'sha256', $real ) ) ) ) {
+						return new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination file no longer matches journal-owned state.', $entry ); }
 					if ( file_exists( $entry['path'] ) ) {
 						wp_delete_file( $entry['path'] );
 					}
 					return ! file_exists( $entry['path'] ); }
 				if ( 'meta' === $entry['type'] ) {
-					return ! $entry['meta_id'] || delete_metadata_by_mid( 'post', $entry['meta_id'] ); }
+					global $wpdb;
+					$row = $entry['meta_id'] ? $wpdb->get_row( $wpdb->prepare( "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE meta_id = %d", $entry['meta_id'] ), ARRAY_A ) : null; // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Exact rollback ownership proof.
+					if ( ! $row ) {
+						return true; }
+					if ( (int) $row['post_id'] !== (int) $entry['post_id'] || $row['meta_key'] !== $entry['meta_key'] || $row['meta_value'] !== $entry['meta_value'] ) {
+						return new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination metadata row no longer matches journal-owned state.', $entry ); }
+					return delete_metadata_by_mid( 'post', $entry['meta_id'] ); }
 				if ( 'post' === $entry['type'] ) {
-					return ! get_post( $entry['post_id'] ) || (bool) wp_delete_post( $entry['post_id'], true ); }
+					$actual_id = (int) ( $entry['actual_id'] ?? 0 );
+					if ( ! $actual_id || ! empty( $entry['mismatch_compensated'] ) || ! get_post( $actual_id ) ) {
+						return true; }
+					if ( ec_link_page_migration_post_fields( get_post( $actual_id ) ) !== $entry['expected_post'] ) {
+						return new WP_Error( 'link_page_migration_rollback_state_mismatch', 'A destination post no longer matches journal-owned state.', $entry ); }
+					return (bool) wp_delete_post( $actual_id, true ); }
 				return true;
 			}
 		);
@@ -540,11 +746,27 @@ function ec_link_page_migration_compensate( &$journal ) {
 				'error'    => is_wp_error( $result ) ? $result->get_error_message() : 'Rollback failed.',
 			); } else {
 			$entry['rolled_back'] = true;
-			ec_link_page_migration_store_journal( $journal ); }
+			$stored               = ec_link_page_migration_store_entry( $journal['id'], $entry );
+			if ( is_wp_error( $stored ) ) {
+				$errors[] = array(
+					'sequence' => $entry['sequence'],
+					'error'    => $stored->get_error_message(),
+				); }
+			}
 	}
+	$remaining_participant_entries = array_filter(
+		$journal['entries'],
+		static function ( $entry ) {
+			return 'participant' === ( $entry['type'] ?? '' ) && ! empty( $entry['applied'] ) && empty( $entry['rolled_back'] );
+		}
+	);
+	if ( $remaining_participant_entries ) {
+		$errors[] = array( 'error' => 'Applied participant journal entries remain.' ); }
 	$journal['status']          = $errors ? 'failed' : 'rolled_back';
 	$journal['rollback_errors'] = $errors;
-	ec_link_page_migration_store_journal( $journal );
+	$stored                     = ec_link_page_migration_store_journal( $journal );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
 	return $errors ? new WP_Error( 'link_page_migration_rollback_incomplete', 'Rollback was incomplete.', $errors ) : $journal;
 }
 
@@ -580,28 +802,45 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 	if ( ! $plan['ready'] ) {
 		return new WP_Error( 'link_page_migration_preflight_failed', 'Migration preflight found blockers.', $plan ); }
 	$journal = array(
-		'schema_version'      => EC_LINK_PAGE_MIGRATION_SCHEMA_VERSION,
-		'id'                  => wp_generate_uuid4(),
-		'status'              => 'applying',
-		'created_at'          => gmdate( 'c' ),
-		'source_blog_id'      => (int) $source_blog_id,
-		'destination_blog_id' => (int) $destination_blog_id,
-		'fingerprint'         => $plan['fingerprint'],
-		'link_page_ids'       => array_column( $plan['posts'], 'ID' ),
-		'attachment_map'      => array_combine( array_column( array_column( $plan['attachments'], 'post' ), 'ID' ), array_column( array_column( $plan['attachments'], 'post' ), 'ID' ) ),
-		'entries'             => array(),
-		'errors'              => array(),
-		'participant_plans'   => $plan['participants'],
+		'schema_version'        => EC_LINK_PAGE_MIGRATION_SCHEMA_VERSION,
+		'network_id'            => $plan['network_id'],
+		'id'                    => wp_generate_uuid4(),
+		'status'                => 'applying',
+		'created_at'            => gmdate( 'c' ),
+		'source_blog_id'        => (int) $source_blog_id,
+		'destination_blog_id'   => (int) $destination_blog_id,
+		'fingerprint'           => $plan['fingerprint'],
+		'link_page_ids'         => array_column( $plan['posts'], 'ID' ),
+		'attachment_map'        => array_combine( array_column( array_column( $plan['attachments'], 'post' ), 'ID' ), array_column( array_column( $plan['attachments'], 'post' ), 'ID' ) ),
+		'entries'               => array(),
+		'errors'                => array(),
+		'participant_plans'     => $plan['participants'],
+		'required_participants' => array_values(
+			array_unique(
+				array_values( $plan['owner_claims'] ) + array_map(
+					static function ( $participant ) {
+						return array(
+							'id'               => $participant['name'],
+							'contract_version' => $participant['contract_version'],
+						); },
+					ec_link_page_migration_participant_registry()->snapshot()
+				),
+				SORT_REGULAR
+			)
+		),
+		'source_inventory'      => $plan,
 	);
 	if ( false === $journal['attachment_map'] ) {
 		$journal['attachment_map'] = array();
 	}
-	if ( ! ec_link_page_migration_store_journal( $journal ) ) {
-		return new WP_Error( 'link_page_migration_journal_write_failed', 'The apply journal could not be created.' ); }
+	$stored = ec_link_page_migration_store_journal( $journal );
+	if ( is_wp_error( $stored ) ) {
+		return $stored; }
 	try {
 		$result = ec_link_page_migration_in_blog(
 			$destination_blog_id,
 			static function () use ( &$journal, $plan, $source_blog_id ) {
+				global $wpdb;
 				$attachment_ids = array_column( array_column( $plan['attachments'], 'post' ), 'ID' );
 				foreach ( array_merge( $plan['posts'], array_column( $plan['attachments'], 'post' ) ) as $post ) {
 					$id   = (int) $post['ID'];
@@ -611,14 +850,27 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 					$inserted          = ec_link_page_migration_mutate(
 						$journal,
 						array(
-							'type'    => 'post',
-							'post_id' => $id,
+							'type'          => 'post',
+							'requested_id'  => $id,
+							'actual_id'     => 0,
+							'expected_post' => $post,
 						),
-						static function () use ( $data, $id, $attachment_ids ) {
+						static function () use ( &$journal, $data, $id, $attachment_ids, $wpdb ) {
 							$result = in_array( $id, $attachment_ids, true ) ? wp_insert_attachment( wp_slash( $data ), false, (int) $data['post_parent'], true ) : wp_insert_post( wp_slash( $data ), true );
 							if ( is_wp_error( $result ) ) {
 								return $result; }
+							$position                                     = count( $journal['entries'] ) - 1;
+							$journal['entries'][ $position ]['actual_id'] = (int) $result;
+							$stored                                       = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
+							if ( is_wp_error( $stored ) ) {
+								return $stored; }
 							if ( (int) $result !== $id ) {
+								$actual_post = get_post( (int) $result );
+								if ( $actual_post && (int) $actual_post->ID === (int) $result ) {
+									wp_delete_post( (int) $result, true );
+									$journal['entries'][ $position ]['mismatch_compensated'] = ! get_post( (int) $result );
+									ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ $position ] );
+								}
 								return new WP_Error(
 									'link_page_migration_id_mismatch',
 									'Core did not preserve an imported object ID.',
@@ -628,6 +880,19 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 									)
 								);
 							}
+							// phpcs:disable WordPress.DB.DirectDatabaseQuery -- Exact bounded timestamp repair.
+							$wpdb->update(
+								$wpdb->posts,
+								array(
+									'post_modified'     => $data['post_modified'],
+									'post_modified_gmt' => $data['post_modified_gmt'],
+								),
+								array( 'ID' => $id ),
+								array( '%s', '%s' ),
+								array( '%d' )
+							);
+							// phpcs:enable WordPress.DB.DirectDatabaseQuery
+							clean_post_cache( $id );
 							$actual   = ec_link_page_migration_post_fields( get_post( $id ) );
 							$expected = $data;
 							unset( $expected['import_id'] );
@@ -646,18 +911,32 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 					$result  = ec_link_page_migration_mutate(
 						$journal,
 						array(
-							'type'     => 'meta',
-							'post_id'  => $row['post_id'],
-							'meta_key' => $row['meta_key'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Journal descriptor field.
-							'meta_id'  => &$meta_id,
+							'type'       => 'meta',
+							'post_id'    => $row['post_id'],
+							'meta_key'   => $row['meta_key'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Journal descriptor field.
+							'meta_value' => $row['meta_value'], // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value -- Journal descriptor.
+							'meta_id'    => &$meta_id,
 						),
-						static function () use ( $row, &$meta_id ) {
-							$meta_id = add_post_meta( $row['post_id'], $row['meta_key'], $row['semantic_value'], false ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Exact journaled metadata replay.
+						static function () use ( $row, &$meta_id, $wpdb ) {
+							// phpcs:disable WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery -- Byte-faithful bounded replay.
+							$inserted = $wpdb->insert(
+								$wpdb->postmeta,
+								array(
+									'post_id'    => $row['post_id'],
+									'meta_key'   => $row['meta_key'],
+									'meta_value' => $row['meta_value'],
+								),
+								array( '%d', '%s', '%s' )
+							);
+							// phpcs:enable WordPress.DB.DirectDatabaseQuery,WordPress.DB.SlowDBQuery
+							$meta_id = $inserted ? (int) $wpdb->insert_id : 0;
 							return $meta_id ? $meta_id : false;
 						}
 					);
 					$journal['entries'][ count( $journal['entries'] ) - 1 ]['meta_id'] = $meta_id;
-					ec_link_page_migration_store_journal( $journal );
+					$stored = ec_link_page_migration_store_entry( $journal['id'], $journal['entries'][ count( $journal['entries'] ) - 1 ] );
+					if ( is_wp_error( $stored ) ) {
+						return $stored; }
 					if ( is_wp_error( $result ) ) {
 						return $result; }
 				}
@@ -670,9 +949,11 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 				);
 				foreach ( $plan['attachments'] as $attachment ) {
 					foreach ( $attachment['files'] as $file ) {
-						$source      = trailingslashit( $source_uploads['basedir'] ) . $file['path'];
+						$source      = ec_link_page_migration_realpath( $source_uploads['basedir'], trailingslashit( $source_uploads['basedir'] ) . $file['path'] );
 						$destination = trailingslashit( $destination_uploads['basedir'] ) . $file['path'];
-						$result      = ec_link_page_migration_mutate(
+						if ( false === $source || ! hash_equals( $file['sha256'], hash_file( 'sha256', $source ) ) ) {
+							return new WP_Error( 'link_page_migration_source_file_drift', 'A source file changed or escaped uploads during apply.', $file ); }
+						$result = ec_link_page_migration_mutate(
 							$journal,
 							array(
 								'type'          => 'file',
@@ -680,8 +961,8 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 								'relative_path' => $file['path'],
 								'sha256'        => $file['sha256'],
 							),
-							static function () use ( $source, $destination, $file ) {
-								if ( file_exists( $destination ) || ! wp_mkdir_p( dirname( $destination ) ) || ! copy( $source, $destination ) ) {
+							static function () use ( $source, $destination, $file, $destination_uploads ) {
+								if ( file_exists( $destination ) || ! wp_mkdir_p( dirname( $destination ) ) || false === ec_link_page_migration_realpath( $destination_uploads['basedir'], dirname( $destination ) ) || ! copy( $source, $destination ) || false === ec_link_page_migration_realpath( $destination_uploads['basedir'], $destination ) ) {
 									return new WP_Error( 'link_page_migration_file_copy_failed', 'A destination media file could not be copied.' ); }
 								return hash_equals( $file['sha256'], hash_file( 'sha256', $destination ) ) ? true : new WP_Error( 'link_page_migration_file_checksum_failed', 'A copied media checksum did not match.' );
 							}
@@ -695,7 +976,7 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 		);
 		if ( is_wp_error( $result ) ) {
 			throw new RuntimeException( $result->get_error_message() ); }
-		$drift_check = ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id );
+		$drift_check = ec_plan_link_page_storage_migration( $source_blog_id, $destination_blog_id, false );
 		if ( is_wp_error( $drift_check ) || ! hash_equals( $journal['fingerprint'], $drift_check['fingerprint'] ) ) {
 			throw new RuntimeException( 'The source changed during migration.' );
 		}
@@ -706,7 +987,9 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 				throw new RuntimeException( $result->get_error_message() ); }
 		}
 		$journal['status'] = 'applied';
-		ec_link_page_migration_store_journal( $journal );
+		$stored            = ec_link_page_migration_store_journal( $journal );
+		if ( is_wp_error( $stored ) ) {
+			return $stored; }
 		return array(
 			'mode'        => 'apply',
 			'journal_id'  => $journal['id'],
@@ -718,14 +1001,17 @@ function ec_apply_link_page_storage_migration( $source_blog_id, $destination_blo
 	} catch ( Throwable $throwable ) {
 		$journal['status']   = 'failed';
 		$journal['errors'][] = $throwable->getMessage();
-		ec_link_page_migration_store_journal( $journal );
+		$stored              = ec_link_page_migration_store_journal( $journal );
+		if ( is_wp_error( $stored ) ) {
+			return $stored; }
 		$rollback = ec_link_page_migration_compensate( $journal );
 		return new WP_Error(
 			'link_page_migration_apply_failed',
 			$throwable->getMessage(),
 			array(
-				'journal_id' => $journal['id'],
-				'rollback'   => is_wp_error( $rollback ) ? $rollback->get_error_data() : 'completed',
+				'journal_id'     => $journal['id'],
+				'journal_status' => $journal['status'],
+				'rollback'       => is_wp_error( $rollback ) ? $rollback->get_error_data() : 'completed',
 			)
 		);
 	}
@@ -736,9 +1022,14 @@ function ec_validate_link_page_storage_migration( $journal_id ) {
 	$journal = ec_link_page_migration_get_journal( $journal_id );
 	if ( is_wp_error( $journal ) ) {
 		return $journal; }
+	if ( get_current_blog_id() !== (int) $journal['source_blog_id'] ) {
+		return new WP_Error( 'link_page_migration_source_affinity', 'Run validation on the journal source blog.', array( 'source_blog_id' => (int) $journal['source_blog_id'] ) ); }
 	if ( 'applied' !== $journal['status'] ) {
 		return new WP_Error( 'link_page_migration_not_applied', 'Only an applied journal can be validated.' ); }
-	$plan = ec_plan_link_page_storage_migration( $journal['source_blog_id'], $journal['destination_blog_id'] );
+	$required = ec_link_page_migration_require_participants( $journal );
+	if ( is_wp_error( $required ) ) {
+		return $required; }
+	$plan = ec_plan_link_page_storage_migration( $journal['source_blog_id'], $journal['destination_blog_id'], false );
 	if ( is_wp_error( $plan ) ) {
 		return $plan; }
 	if ( ! hash_equals( $journal['fingerprint'], $plan['fingerprint'] ) ) {
@@ -780,7 +1071,8 @@ function ec_validate_link_page_storage_migration( $journal_id ) {
 	if ( is_wp_error( $destination ) ) {
 		return $destination;
 	}
-	$context = ec_link_page_migration_journal_context( $journal );
+	$context         = ec_link_page_migration_journal_context( $journal );
+	$context['mode'] = 'validate';
 	foreach ( ec_link_page_migration_participant_registry()->snapshot() as $participant ) {
 		$result = ec_link_page_migration_invoke_participant( $participant, 'validate', $context );
 		if ( is_wp_error( $result ) ) {
@@ -799,6 +1091,8 @@ function ec_rollback_link_page_storage_migration( $journal_id ) {
 	$journal = ec_link_page_migration_get_journal( $journal_id );
 	if ( is_wp_error( $journal ) ) {
 		return $journal; }
+	if ( get_current_blog_id() !== (int) $journal['source_blog_id'] ) {
+		return new WP_Error( 'link_page_migration_source_affinity', 'Run rollback on the journal source blog.', array( 'source_blog_id' => (int) $journal['source_blog_id'] ) ); }
 	if ( 'rolled_back' === $journal['status'] ) {
 		return array(
 			'mode'       => 'rollback',

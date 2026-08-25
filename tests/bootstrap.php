@@ -90,6 +90,8 @@ function sanitize_hex_color( $value ) { return is_string( $value ) && preg_match
 function plugin_dir_path( $file ) { return rtrim( dirname( $file ), '/' ) . '/'; }
 function plugin_basename( $file ) { return basename( dirname( $file ) ) . '/' . basename( $file ); }
 function plugins_url( $path ) { return 'https://example.test/plugins/extrachill-link-pages/' . ltrim( $path, '/' ); }
+function trailingslashit( $value ) { return rtrim( $value, '/\\' ) . '/'; }
+function wp_normalize_path( $value ) { return str_replace( '\\', '/', $value ); }
 function register_activation_hook( $file, $callback ) { $GLOBALS['ec_test']['activation_hook'] = $callback; }
 function register_deactivation_hook( $file, $callback ) { $GLOBALS['ec_test']['deactivation_hook'] = $callback; }
 class WP_Block_Type_Registry {
@@ -127,6 +129,9 @@ function wp_die( $message ) { throw new EcTestActivationException( $message ); }
 function is_multisite() { return ! empty( $GLOBALS['ec_test']['multisite'] ); }
 function get_site_option( $key, $default = false ) { return $GLOBALS['ec_test']['site_options'][ $key ] ?? $default; }
 function update_site_option( $key, $value ) { $GLOBALS['ec_test']['site_options'][ $key ] = $value; return true; }
+function get_network_option( $network_id, $key, $default = false ) { return $GLOBALS['ec_test']['site_options'][ $key ] ?? $default; }
+function update_network_option( $network_id, $key, $value ) { if ( ! empty( $GLOBALS['ec_test']['fail_network_option_write'] ) ) { return false; } $GLOBALS['ec_test']['site_options'][ $key ] = $value; return true; }
+function get_current_network_id() { return 1; }
 function get_sites( $args = array() ) {
 	$GLOBALS['ec_test']['site_queries'][] = $args;
 	$ids = array_keys( $GLOBALS['ec_test']['blogs'] );
@@ -213,7 +218,7 @@ function get_site( $blog_id ) {
 	if ( ! isset( $GLOBALS['ec_test']['blogs'][ $blog_id ] ) ) {
 		return null;
 	}
-	return (object) array_merge( array( 'deleted' => 0, 'archived' => 0, 'spam' => 0 ), $GLOBALS['ec_test']['sites'][ $blog_id ] ?? array() );
+	return (object) array_merge( array( 'deleted' => 0, 'archived' => 0, 'spam' => 0, 'network_id' => 1 ), $GLOBALS['ec_test']['sites'][ $blog_id ] ?? array() );
 }
 function ec_test_store( $key ) { return $GLOBALS['ec_test']['blogs'][ get_current_blog_id() ][ $key ]; }
 function get_post( $post_id ) { $posts = ec_test_store( 'posts' ); return $posts[ $post_id ] ?? null; }
