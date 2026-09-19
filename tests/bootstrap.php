@@ -743,7 +743,11 @@ function __return_true() {
 if ( getenv( 'LINK_PAGES_USE_FALLBACK' ) ) {
 	define( 'EC_LINK_PAGE_POST_TYPE', 'artist_link_page' );
 	define( 'EC_LINK_PAGE_OWNER_META_KEY', '_ec_link_page_owner_reference' );
-	$fallback = getenv( 'ARTIST_PLATFORM_WORKTREE' ) ?: '/var/lib/datamachine/workspace/extrachill-artist-platform@refactor-152-link-pages-runtime-handoff';
+	$fallback = getenv( 'ARTIST_PLATFORM_WORKTREE' ) ?: '/var/lib/datamachine/workspace/extrachill-artist-platform';
+	if ( ! is_dir( $fallback . '/inc/link-pages' ) ) {
+		fwrite( STDERR, 'The bundled link-pages fallback requires the Extra Chill Artist Platform sibling checkout. Set ARTIST_PLATFORM_WORKTREE to an extrachill-artist-platform checkout containing inc/link-pages (expected default: ' . $fallback . ")\n" );
+		exit( 1 );
+	}
 	require_once $fallback . '/inc/link-pages/owner-reference.php';
 	require_once $fallback . '/inc/link-pages/operations.php';
 }

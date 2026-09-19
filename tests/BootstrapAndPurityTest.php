@@ -4,9 +4,9 @@ use PHPUnit\Framework\TestCase;
 
 final class BootstrapAndPurityTest extends TestCase {
 	private function artistWorktree(): string {
-		$path = getenv( 'ARTIST_PLATFORM_WORKTREE' ) ?: '/var/lib/datamachine/workspace/extrachill-artist-platform@refactor-152-link-pages-runtime-handoff';
+		$path = getenv( 'ARTIST_PLATFORM_WORKTREE' ) ?: '/var/lib/datamachine/workspace/extrachill-artist-platform';
 		if ( ! is_dir( $path . '/inc/link-pages' ) ) {
-			$this->markTestSkipped( 'The optional Artist Platform integration worktree is unavailable.' );
+			$this->fail( 'The Extra Chill Artist Platform sibling checkout is unavailable. Set ARTIST_PLATFORM_WORKTREE to an extrachill-artist-platform checkout containing inc/link-pages (expected default: ' . $path . ').' );
 		}
 		return $path;
 	}
