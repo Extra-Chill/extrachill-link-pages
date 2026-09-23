@@ -166,9 +166,24 @@ final class ContentOwnershipTest extends TestCase {
 		$this->assertStringContainsString( 'family=Roboto', ec_link_page_google_fonts_url( array( 'Loft Sans', 'Roboto' ) ) );
 		$this->assertSame( '', ec_link_page_google_fonts_url( array( 'Loft Sans' ) ) );
 
+		// Portable: with no site answering the filter, the runtime emits no
+		// local @font-face and assumes no theme. The font still renders
+		// through its CSS fallback stack.
+		$this->assertSame( '', ec_link_page_local_font_face_url( 'Loft Sans' ) );
+		$this->assertSame( '', ec_link_page_local_fonts_css( array( 'Loft Sans', 'Roboto' ) ) );
+
+		// A site that hosts the face supplies its location through the filter.
+		add_filter(
+			'ec_link_page_local_font_face_url',
+			static function ( $url, $font_value ) {
+				return 'Loft Sans' === $font_value ? 'https://fonts.example.test/LoftSans' : $url;
+			},
+			10,
+			2
+		);
 		$css = ec_link_page_local_fonts_css( array( 'Loft Sans', 'Roboto' ) );
 		$this->assertStringContainsString( "@font-face{font-family:'Loft Sans'", $css );
-		$this->assertStringContainsString( 'themes/extrachill/assets/fonts/WilcoLoftSans-Treble.woff2', $css );
+		$this->assertStringContainsString( 'https://fonts.example.test/LoftSans.woff2', $css );
 		$this->assertStringNotContainsString( 'Roboto', $css );
 
 		// A resolved stack (from an owner projection override) round-trips
@@ -185,6 +200,15 @@ final class ContentOwnershipTest extends TestCase {
 					'--link-page-body-font-family'  => 'Roboto',
 				),
 			)
+		);
+		// The site supplies the local face location (the runtime assumes no theme).
+		add_filter(
+			'ec_link_page_local_font_face_url',
+			static function ( $url, $font_value ) {
+				return 'Loft Sans' === $font_value ? 'https://fonts.example.test/LoftSans' : $url;
+			},
+			10,
+			2
 		);
 		ec_enqueue_link_page_fonts( 40 );
 		$this->assertContains( 'extrch-link-page-fonts', $GLOBALS['ec_test']['enqueued_styles'] );

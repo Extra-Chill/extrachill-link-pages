@@ -166,23 +166,30 @@ function ec_link_page_google_fonts_url( $font_values ) {
 }
 
 /**
- * Return the local @font-face source URL (without extension) for one font.
+ * Base URL of a locally-hosted font face, supplied by the site.
  *
- * This runtime references the Extra Chill theme's shipped font files rather
- * than bundling its own copies. The standalone public host and every network
- * site that can render a Link Page run on the same WordPress install as the
- * Extra Chill theme (the network's only theme), so the asset is always
- * reachable; duplicating a binary font file into a second plugin would only
- * create a second source of truth that can drift from the original.
+ * Portable by design: the runtime bundles no font files and assumes no theme,
+ * so locally-hosted faces are resolved through the
+ * `ec_link_page_local_font_face_url` filter. Catalog entries whose face no
+ * site provides still render through their CSS fallback stack.
  *
  * @param string $font_value Normalized font name.
  * @return string Base URL without extension, or '' when no local face exists.
  */
 function ec_link_page_local_font_face_url( $font_value ) {
-	if ( 'Loft Sans' !== $font_value ) {
-		return '';
-	}
-	return get_template_directory_uri() . '/assets/fonts/WilcoLoftSans-Treble';
+	/**
+	 * Filters the base URL (without extension) of a locally-hosted font face.
+	 *
+	 * The runtime ships no font files and assumes no theme, so it has no
+	 * default: a site that offers a locally-hosted font in the catalog answers
+	 * this filter with where its .woff2/.woff files live. Returning '' means
+	 * "no local face", and the font falls back through its CSS stack.
+	 *
+	 * @param string $url        Base URL without extension, or ''.
+	 * @param string $font_value Normalized font name.
+	 */
+	$url = apply_filters( 'ec_link_page_local_font_face_url', '', (string) $font_value );
+	return is_string( $url ) ? $url : '';
 }
 
 /** Build @font-face CSS for every locally-hosted font among the given values. */
