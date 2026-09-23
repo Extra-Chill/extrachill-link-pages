@@ -266,6 +266,12 @@ function ec_resolve_link_page_public_query() {
 	$wp_query->is_single               = true;
 	$wp_query->is_singular             = true;
 	$wp_query->is_404                  = false;
+	// The request may have parsed as the blog home (no rewrite rule matches
+	// the bare slug on a dedicated site); clear every non-singular flag so
+	// is_home()/is_front_page() do not misreport the resolved Link Page.
+	foreach ( array( 'is_home', 'is_front_page', 'is_page', 'is_archive', 'is_posts_page', 'is_search', 'is_feed', 'is_paged', 'is_attachment', 'is_privacy_policy' ) as $ec_link_page_flag ) {
+		$wp_query->{$ec_link_page_flag} = false;
+	}
 	$wp_query->query_vars['name']      = $slug;
 	$wp_query->query_vars['post_type'] = ec_link_page_post_type( get_current_blog_id() );
 	$wp_query->queried_object_id       = (int) $post->ID;
