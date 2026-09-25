@@ -136,7 +136,6 @@ function ec_enqueue_link_page_edit_shell() {
 function ec_link_page_edit_document_title( $title ) {
 	return ec_is_link_page_edit_request() ? 'Edit your link page' : $title;
 }
-add_filter( 'pre_get_document_title', 'ec_link_page_edit_document_title', 20 );
 
 /**
  * Keep the /edit shell out of search results.
@@ -151,4 +150,8 @@ function ec_link_page_edit_robots( $robots ) {
 	}
 	return $robots;
 }
-add_filter( 'wp_robots', 'ec_link_page_edit_robots' );
+
+if ( function_exists( 'add_filter' ) ) {
+	add_filter( 'pre_get_document_title', 'ec_link_page_edit_document_title', 20 );
+	add_filter( 'wp_robots', 'ec_link_page_edit_robots' );
+}
